@@ -1,0 +1,7 @@
+# Never commit local personal Google Sheet cache!
+data/
+__pycache__/
+*.pyc
+.DS_Store
+.vercel/
+.vercel

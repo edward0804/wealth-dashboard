@@ -1,0 +1,6 @@
+/data/
+/server.py
+/apps-script/
+__pycache__/
+*.pyc
+.DS_Store
