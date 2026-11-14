@@ -1,117 +1,53 @@
-// Gradually migrating to TypeScript modules under src/utils and src/core
-import { PIE_COLORS, SUMMARY_TITLES } from "../core/constants";
+// Gradually migrating to TypeScript modules under src/app, src/core, and src/services
+import { PIE_COLORS } from "../core/constants";
+import { computeModel as computeCoreModel } from "../core/model";
+import { computeLeveragePlan, computeRebalancePlan, getDefaultMonthlyInvestTwd } from "../core/rebalance";
 import {
-  safeStorageGet,
-  safeStorageJsonGet,
-  safeStorageSet,
+  buildPlainTextReportSummary as buildPlainTextReportText,
+  computeMonthReportStats,
+  getAvailableReportMonths
+} from "../core/report";
+import {
+  XIRR_BENCH_LIST,
+  computePerTickerXirr,
+  computeXirrComparison
+} from "../core/xirr-analysis";
+import {
+  applyDemoMutation,
+  buildDemoDashboardPayload
+} from "../services/demo";
+import {
+  PwaCloudApiError,
+  encodePairingCode,
+  formatMaskedExecUrl,
+  getRuntimeMode,
+  hasPwaCloudBridge as hasPwaBridge,
+  isCloudCapable as isCloudCapableBridge,
+  parsePairingCode,
+  postPwaCloudApi,
+  validateAppsScriptExecUrl
+} from "../services/pairing";
+import {
+  clearPwaSnapshotCache,
+  fmtPct,
+  fmtQty,
+  fmtTwd,
+  fmtUsd,
+  loadSnapshotCache,
+  persistCustomCostsLocal,
+  persistPwaConfigLocal,
+  persistRebTargetsLocal,
+  saveSnapshotCache,
+  state
+} from "./state";
+import {
+  copyTextSafe,
   escapeHtml,
-  copyTextSafe
+  safeStorageGet,
+  safeStorageSet
 } from "../utils/storage";
-import {
-  parseNum,
-  formatTwdValue,
-  formatUsdValue,
-  formatQtyValue,
-  formatPctValue
-} from "../utils/formatters";
-import {
-  todayIsoStr,
-  parseDateLoose,
-  toIsoDateStr,
-  parseBenchDateIso
-} from "../utils/dates";
-import { solveXirrPct } from "../core/xirr";
-import { replayMovingAverageCost } from "../core/cost";
-import {
-  SHEET_ROLE_ALIASES,
-  OVERVIEW_HEADER_SPECS,
-  TW_TRADE_HEADER_SPECS,
-  US_TRADE_HEADER_SPECS,
-  HISTORY_HEADER_SPECS,
-  RSU_HEADER_SPECS,
-  normHeaderText,
-  colIdxToLetter,
-  resolveSheetEntry,
-  resolveHeaderMap,
-  readRowCell,
-  normalizeSideLabel,
-  extractRowMeta,
-  adaptSheetsToCanonical
-} from "../core/schema";
-import { parseBenchmarkSeries } from "../core/benchmark";
-
-const state = {
-  rawSheets: null,
-  overviewFormulas: [],
-  updatedAt: null,
-  writeEnabled: true,
-  lastPairingFailed: false,
-  activePage: "overview",
-  hideAmounts: safeStorageGet(typeof sessionStorage !== "undefined" ? sessionStorage : null, "wealth_hide_amounts") === "1",
-  includeUnvestedRsu: false,
-  pieMode: "holding",
-  activeSliceIndex: null,
-  histDays: 9999,
-  assetTab: "open",
-  catFilter: "ALL",
-  sortKey: "valueTwd",
-  sortDir: "desc",
-  // Trade History Explorer state
-  trRange: "6M",
-  trStartDate: "",
-  trEndDate: "",
-  trDatesInitialized: false,
-  trMarket: "ALL",
-  trSide: "ALL",
-  trTicker: "ALL",
-  trKind: "ALL",
-  trIncludePending: true,
-  trSortKey: "date",
-  trSortDir: "desc",
-  // Modal state
-  tradeSide: "買入",
-  amountManuallyEdited: false,
-  customCosts: safeStorageJsonGet(typeof localStorage !== "undefined" ? localStorage : null, "wealth_custom_costs_v1", {}),
-  // Smart Rebalancing & Target Leverage state
-  rebTargets: Object.assign(
-    { twPct: 50, usPct: 40, cashPct: 10, targetLev: 1.15, mode: "inflow", newCashTwd: null },
-    safeStorageJsonGet(typeof localStorage !== "undefined" ? localStorage : null, "wealth_rebalance_targets_v1", {})
-  ),
-  // XIRR vs Benchmark state
-  xirrScope: "HIST_ALL",
-  xirrBench: "BLEND_50_50",
-  // Monthly Financial Report state
-  repSelectedYm: "",
-  repConfig: {
-    email: safeStorageGet(typeof localStorage !== "undefined" ? localStorage : null, "wealth_report_email", ""),
-    triggerEnabled: false
-  },
-  // Standalone iPhone PWA Cloud Bridge config
-  pwaConfig: Object.assign(
-    { apiUrl: "", apiToken: "" },
-    safeStorageJsonGet(typeof localStorage !== "undefined" ? localStorage : null, "wealth_pwa_config_v1", {})
-  ),
-  spreadsheetTitle: "財務狀況總整理",
-  spreadsheetUrl: "#",
-  isDemoMode: false,
-  computed: null
-};
-
-function fmtTwd(n, signed = false) {
-  return formatTwdValue(n, state.hideAmounts, signed);
-}
-
-function fmtUsd(n, signed = false) {
-  return formatUsdValue(n, state.hideAmounts, signed);
-}
-
-function fmtQty(n, suffix = "") {
-  return formatQtyValue(n, state.hideAmounts, suffix);
-}
-
-function fmtPct(n, signed = false) {
-  return formatPctValue(n, signed);
-}
+import { parseNum } from "../utils/formatters";
+import { parseDateLoose, toIsoDateStr, todayIsoStr } from "../utils/dates";
 
 function showToast(msg) {
   const el = document.getElementById("toast");
@@ -122,594 +58,19 @@ function showToast(msg) {
 }
 
 function computeModel(sheets, ovFormulas = []) {
-  const today = new Date();
-  const canonical = adaptSheetsToCanonical(sheets, ovFormulas);
-  let usdTwd = canonical.fxHintFromUs > 0 ? canonical.fxHintFromUs : 32.8591;
-
-  const overviewRows = canonical.overviewRowsRaw || [];
-  const valColL = (canonical.ovColLetters && canonical.ovColLetters.valueTwd) || "D";
-  const valRefRe = new RegExp("\\$?" + valColL + "(\\d+)", "gi");
-
-  // Discover leveraged rows dynamically from the asset leverage ratio formula
-  const leveragedSheetRows = new Set();
-  overviewRows.forEach((row) => {
-    if (row && row.name === "資產槓桿比" && row.levRatioFormula) {
-      const mNum = String(row.levRatioFormula).match(/\(([^)]+)\)\s*\//);
-      if (mNum) {
-        const refs = mNum[1].match(valRefRe) || [];
-        // First two value refs are twTotal and usTotal; subsequent refs are 2x leveraged rows
-        refs.slice(2).forEach(ref => leveragedSheetRows.add(Number(ref.replace(/[^\d]/g, ""))));
-      }
-    }
+  return computeCoreModel(sheets, ovFormulas, {
+    customCosts: state.customCosts,
+    includeUnvestedRsu: state.includeUnvestedRsu
   });
-
-  // Infer live USD/TWD from any USD-priced stock row in the Financial Overview sheet
-  for (const r of overviewRows) {
-    if (r && !r.isBlank && r.qty > 0 && r.unitStr.includes("USD") && r.valueTwd > 0) {
-      const px = parseNum(r.unitStr);
-      if (px > 0) { usdTwd = r.valueTwd / (r.qty * px); break; }
-    }
-  }
-
-  // TW Stock Trades (from canonical schema)
-  const twStats = {};
-  const twTradesBySym = {};
-  const pendingDcaRows = [];
-  const allTradeLogs = [];
-
-  canonical.twTrades.forEach((t) => {
-    const { sheetName, sheetRow, dateStr: dtStr, side, kind, sym, amt, rawPxStr, px, rawQty, note } = t;
-    const dObj = parseDateLoose(dtStr);
-
-    let mult = 1;
-    if (sym === "TPE:0050" && px > 140) mult = 4;
-    if (sym === "TPE:00685L" && px > 50) mult = 24;
-    const adjQty = rawQty > 0 ? rawQty * mult : 0;
-
-    if (sym) {
-      allTradeLogs.push({
-        sheetName: sheetName || "台股交易明細",
-        sheetRow,
-        date: dtStr,
-        dateIso: toIsoDateStr(dObj),
-        dateSort: dObj?.getTime() || 0,
-        market: "台股",
-        side,
-        kind,
-        sym,
-        pxNum: px,
-        pxStr: rawPxStr ? `NT$${px.toLocaleString("en-US", { maximumFractionDigits: 2 })}` : "待成交",
-        qtyNum: rawQty,
-        adjQty,
-        splitMult: mult,
-        isPendingQty: rawQty <= 0,
-        amtTwd: amt,
-        amtUsd: null,
-        amtTwdEquiv: amt,
-        isPendingDca: kind === "定期定額" && rawPxStr === "",
-        note
-      });
-    }
-
-    if (kind === "定期定額" && rawPxStr === "" && sym) {
-      pendingDcaRows.push({ sheetRow, date: dtStr, sym, amount: amt });
-    }
-
-    if (!sym || rawQty <= 0) return;
-
-    if (!twTradesBySym[sym]) twTradesBySym[sym] = [];
-    twTradesBySym[sym].push({
-      sheetRow,
-      dateSort: dObj?.getTime() || 0,
-      side,
-      adjQty,
-      costNative: side === "買入" ? amt : 0,
-      proceedsNative: side === "賣出" ? amt : 0
-    });
-
-    if (!twStats[sym]) twStats[sym] = { buyQty: 0, buyCostTwd: 0, divReinvestTwd: 0, sellQty: 0, sellProceedsTwd: 0 };
-    if (side === "買入") {
-      twStats[sym].buyQty += adjQty;
-      twStats[sym].buyCostTwd += amt;
-      if (kind.includes("股息")) twStats[sym].divReinvestTwd += amt;
-    } else if (side === "賣出") {
-      twStats[sym].sellQty += adjQty;
-      twStats[sym].sellProceedsTwd += amt;
-    }
-  });
-
-  // US Stock Trades (from canonical schema)
-  const usStats = {};
-  const usTradesBySym = {};
-  canonical.usTrades.forEach((t) => {
-    const { sheetName, sheetRow, dateStr: dtStr, side, kind, sym, rawAmtUsd, px, qty, note } = t;
-    if (!sym) return;
-    const dObj = parseDateLoose(dtStr);
-    const computedUsd = px > 0 && qty > 0 ? px * qty : (rawAmtUsd > 0 ? rawAmtUsd : null);
-
-    allTradeLogs.push({
-      sheetName: sheetName || "美股交易明細",
-      sheetRow,
-      date: dtStr,
-      dateIso: toIsoDateStr(dObj),
-      dateSort: dObj?.getTime() || 0,
-      market: "美股",
-      side,
-      kind,
-      sym,
-      pxNum: px,
-      pxStr: px > 0 ? `USD $${px.toFixed(2)}` : (kind.includes("股利") ? "股利配股" : "—"),
-      qtyNum: qty,
-      adjQty: qty,
-      splitMult: 1,
-      isPendingQty: false,
-      amtTwd: null,
-      amtUsd: computedUsd,
-      amtTwdEquiv: computedUsd !== null ? computedUsd * usdTwd : 0,
-      isPendingDca: false,
-      note: note || ""
-    });
-
-    if (qty <= 0) return;
-    if (!usTradesBySym[sym]) usTradesBySym[sym] = [];
-    usTradesBySym[sym].push({
-      sheetRow,
-      dateSort: dObj?.getTime() || 0,
-      side,
-      adjQty: qty,
-      costNative: side === "買入" ? (computedUsd || 0) : 0,
-      proceedsNative: side === "賣出" ? (computedUsd || 0) : 0
-    });
-
-    if (!usStats[sym]) usStats[sym] = { buyQty: 0, buyCostUsd: 0, divQty: 0, sellQty: 0, sellProceedsUsd: 0 };
-    if (side === "買入") {
-      usStats[sym].buyQty += qty;
-      usStats[sym].buyCostUsd += computedUsd || 0;
-      if (kind.includes("股利")) usStats[sym].divQty += qty;
-    } else if (side === "賣出") {
-      usStats[sym].sellQty += qty;
-      usStats[sym].sellProceedsUsd += computedUsd || 0;
-    }
-  });
-
-  allTradeLogs.sort((a, b) => b.dateSort - a.dateSort || b.sheetRow - a.sheetRow);
-
-  // RSU Schedule (optional - cleanly supports sheets without RSU or with any RSU ticker)
-  let vestedRsu = 0, unvestedRsu = 0, nextVest = null, rsuTicker = null;
-  const rsuByYear = {};
-  const rsuVests = [];
-  for (const r of (canonical.rsuVestsRaw || [])) {
-    if (!r.dateStr || r.shares <= 0) continue;
-    const dt = parseDateLoose(r.dateStr);
-    const sh = r.shares;
-    if (!dt) continue;
-    if (r.ticker) rsuTicker = r.ticker;
-    else if (!rsuTicker) rsuTicker = "GOOG";
-    rsuVests.push({
-      dateStr: r.dateStr,
-      dateIso: toIsoDateStr(dt),
-      dateSort: dt.getTime(),
-      shares: sh,
-      ticker: rsuTicker
-    });
-    const yr = String(dt.getFullYear());
-    if (!rsuByYear[yr]) rsuByYear[yr] = { vested: 0, unvested: 0 };
-    if (dt <= today) {
-      vestedRsu += sh;
-      rsuByYear[yr].vested += sh;
-    } else {
-      unvestedRsu += sh;
-      rsuByYear[yr].unvested += sh;
-      if (!nextVest || dt < nextVest.date) nextVest = { dateStr: r.dateStr, date: dt, shares: sh };
-    }
-  }
-
-  // Dynamically parse Financial Overview holdings via mapped header columns
-  const holdings = [];
-  const tickerMap = {};
-  let leverageRatio = 1.0;
-  let rsuStockPriceUsd = 0;
-
-  for (let i = 0; i < overviewRows.length; i++) {
-    const row = overviewRows[i];
-    const sheetRowNum = row.sheetRowNum;
-    if (row.isBlank) {
-      if (holdings.length > 0) break;
-      continue;
-    }
-    const name = row.name;
-    if (SUMMARY_TITLES.has(name)) continue;
-
-    const meta = extractRowMeta(row.dispRow, row.formRow, canonical.ovMap);
-    const { ticker, hasSumifs, category, currency } = meta;
-    const qty = row.qty;
-    const unitStr = row.unitStr;
-    const isUsdPrice = currency === "USD" && category === "美股";
-    const marketPrice = parseNum(unitStr);
-    const valueTwd = row.valueTwd;
-    const note = row.note;
-
-    const isLev2x = leveragedSheetRows.has(sheetRowNum) || name.includes("正2") || ticker === "QLD" || ticker === "TPE:00685L";
-    let strategy = "現金與外幣預備金";
-    if (category !== "現金") {
-      if (isLev2x) strategy = "2倍槓桿 ETF";
-      else if (ticker === rsuTicker || (!hasSumifs && !(category === "美股" && usStats[ticker]) && !(category === "台股" && twStats[ticker]))) strategy = "核心個股與 RSU";
-      else if (["TPE:2330", "GOOG", "TSLA", "NVDA", "AAPL", "MSFT"].includes(ticker)) strategy = "核心個股與 RSU";
-      else strategy = "市值型原型 ETF";
-    }
-
-    if (ticker === rsuTicker && marketPrice > 0) rsuStockPriceUsd = marketPrice;
-
-    // Fully Dynamic Cost Basis & ROI Resolution (Pre-sheet Shares + Initial Avg Cost + Chronological Replay)
-    const rawSheetInitQty = row.rawInitQty;
-    const rawSheetInitCost = row.rawInitCost;
-    const sheetInitQty = rawSheetInitQty !== "" ? parseNum(rawSheetInitQty) : null;
-    const sheetInitCost = rawSheetInitCost !== "" ? parseNum(rawSheetInitCost) : 0;
-
-    let avgCostNative = null, costTwd = null, pnlTwd = null, roiPct = null;
-    let costNote = "", needsInitCost = false;
-    let initQtyResolved = 0, initAvgCostResolved = sheetInitCost;
-    let loggedBuyQty = 0, loggedSellQty = 0, loggedBuyAvg = null;
-    let linA = 0, linB = 0, replayFinalQty = qty;
-    let exactRealizedReplay = null;
-
-    if (category === "現金") {
-      costNote = note ? `備註：${note}` : "現金存款部位";
-    } else if ((category === "台股" || category === "美股") && ticker) {
-      const isTw = category === "台股";
-      const st = isTw ? twStats[ticker] : usStats[ticker];
-      const symTrades = isTw ? (twTradesBySym[ticker] || []) : (usTradesBySym[ticker] || []);
-      loggedBuyQty = st ? st.buyQty : 0;
-      loggedSellQty = st ? st.sellQty : 0;
-      const loggedBuyCostNative = st ? (isTw ? st.buyCostTwd : st.buyCostUsd) : 0;
-      loggedBuyAvg = loggedBuyQty > 0 ? loggedBuyCostNative / loggedBuyQty : null;
-
-      const netLogged = loggedBuyQty - loggedSellQty;
-      const impliedUnrecordedQty = Math.max(0, +(qty - netLogged).toFixed(6));
-      initQtyResolved = sheetInitQty !== null ? sheetInitQty : impliedUnrecordedQty;
-
-      // Fallback to legacy localStorage custom cost only if Google Sheet initial cost column is blank
-      const legacyKey = ticker === "TPE:0050" ? "0050_avg_twd" : (ticker === "TPE:2330" ? "2330_avg_twd" : (ticker === "GOOG" ? "goog_grant_usd" : `cost_${ticker}`));
-      if (initAvgCostResolved <= 0 && parseNum(state.customCosts[legacyKey]) > 0) {
-        initAvgCostResolved = parseNum(state.customCosts[legacyKey]);
-      }
-
-      const fxMult = isUsdPrice ? usdTwd : 1;
-      const tol = isTw ? 1 : 0.05;
-
-      if (initQtyResolved <= tol && loggedBuyQty > 0) {
-        // 100% of shares are accounted for in the TW/US trade logs
-        const rep = replayMovingAverageCost(symTrades, 0, 0);
-        linA = rep.linA; linB = rep.linB; replayFinalQty = rep.finalQty;
-        exactRealizedReplay = rep;
-        avgCostNative = rep.finalAvgNative;
-        costTwd = avgCostNative * qty * fxMult;
-        pnlTwd = valueTwd - costTwd;
-        roiPct = avgCostNative > 0 ? ((marketPrice - avgCostNative) / avgCostNative) * 100 : null;
-        costNote = (!isTw && st?.divQty > 0) ? "美股明細自動回算 (含股利配股)" : `${category}明細自動回算 (100% 紀錄完整)`;
-      } else {
-        // Has pre-sheet initial shares
-        const rep = replayMovingAverageCost(symTrades, initQtyResolved, initAvgCostResolved);
-        linA = rep.linA; linB = rep.linB; replayFinalQty = rep.finalQty || qty;
-
-        if (initAvgCostResolved > 0) {
-          exactRealizedReplay = rep;
-          avgCostNative = rep.finalAvgNative;
-          costTwd = avgCostNative * qty * fxMult;
-          pnlTwd = valueTwd - costTwd;
-          roiPct = avgCostNative > 0 ? ((marketPrice - avgCostNative) / avgCostNative) * 100 : null;
-          const initPxFmt = isUsdPrice ? `USD $${initAvgCostResolved.toFixed(2)}` : `NT$${initAvgCostResolved.toFixed(2)}`;
-          if (loggedBuyQty > 0 || loggedSellQty > 0) {
-            costNote = `期初 ${initQtyResolved.toLocaleString()} 股 (@${initPxFmt}) ＋ 明細移動平均精算`;
-          } else if (ticker === rsuTicker) {
-            costNote = `依 RSU 賦予成本 (@${initPxFmt}) 計算`;
-          } else {
-            costNote = `依試算表期初成本 (@${initPxFmt}) 計算`;
-          }
-        } else {
-          needsInitCost = ticker !== rsuTicker;
-          if (ticker === rsuTicker) {
-            costNote = "公司 RSU 獎勵股（零現金成本 · 可選填賦予價）";
-          } else if (loggedBuyAvg !== null) {
-            costNote = `尚有 ${initQtyResolved.toLocaleString()} 股期初部位未填均價（明細內買均 NT$${loggedBuyAvg.toFixed(2)}）`;
-          } else {
-            costNote = `期初既有 ${initQtyResolved.toLocaleString()} 股尚未填寫買入均價`;
-          }
-        }
-      }
-    }
-
-    const item = {
-      key: name,
-      sheetRowNum,
-      name,
-      ticker,
-      hasSumifs,
-      isLev2x,
-      category,
-      strategy,
-      currency,
-      qty,
-      unitStr,
-      isUsdPrice,
-      marketPrice,
-      valueTwd,
-      note,
-      avgCostNative,
-      costTwd,
-      pnlTwd,
-      roiPct,
-      costNote,
-      needsInitCost,
-      isRsu: ticker === rsuTicker,
-      sheetInitQty,
-      sheetInitCost,
-      initQtyResolved,
-      initAvgCostResolved,
-      loggedBuyQty,
-      loggedSellQty,
-      loggedBuyAvg,
-      linA,
-      linB,
-      replayFinalQty,
-      exactRealizedReplay
-    };
-    holdings.push(item);
-    if (ticker) tickerMap[ticker] = item;
-  }
-
-  for (const r of overviewRows) {
-    if (r && r.name === "資產槓桿比") leverageRatio = r.qty || leverageRatio;
-  }
-
-  const unvestedValueTwd = Math.round(unvestedRsu * rsuStockPriceUsd * usdTwd);
-  if (state.includeUnvestedRsu && unvestedRsu > 0) {
-    holdings.push({
-      key: "GOOG_UNVESTED",
-      name: `${rsuTicker} 未歸屬 RSU (至2030)`,
-      ticker: null,
-      hasSumifs: false,
-      isLev2x: false,
-      category: "美股",
-      strategy: "核心個股與 RSU",
-      currency: "USD",
-      qty: unvestedRsu,
-      unitStr: `USD $${rsuStockPriceUsd.toFixed(2)}`,
-      isUsdPrice: true,
-      marketPrice: rsuStockPriceUsd,
-      valueTwd: unvestedValueTwd,
-      note: "待歸屬股數現值模擬",
-      avgCostNative: null,
-      costTwd: null,
-      pnlTwd: null,
-      roiPct: null,
-      costNote: "未來待歸屬 RSU 模擬部位",
-      editableCostKey: null,
-      defaultPlaceholder: ""
-    });
-  }
-
-  const totalAssets = holdings.reduce((s, h) => s + h.valueTwd, 0);
-  for (const h of holdings) h.weight = totalAssets > 0 ? (h.valueTwd / totalAssets) * 100 : 0;
-
-  const twTotal = holdings.filter(h => h.category === "台股").reduce((s, h) => s + h.valueTwd, 0);
-  const usTotal = holdings.filter(h => h.category === "美股").reduce((s, h) => s + h.valueTwd, 0);
-  const cashTotal = holdings.filter(h => h.category === "現金").reduce((s, h) => s + h.valueTwd, 0);
-  const extraLev = holdings.filter(h => h.isLev2x).reduce((s, h) => s + h.valueTwd, 0);
-  const totalExposure = twTotal + usTotal + extraLev;
-  const effLeverage = totalAssets > 0 ? totalExposure / totalAssets : leverageRatio;
-
-  // Dynamic ticker suggestion lists from sheet holdings + historical trade logs
-  const twKnownTickers = Array.from(new Set([
-    ...holdings.filter(h => h.category === "台股" && h.ticker).map(h => h.ticker),
-    ...Object.keys(twStats)
-  ]));
-  const usKnownTickers = Array.from(new Set([
-    ...holdings.filter(h => h.category === "美股" && h.ticker && h.ticker !== rsuTicker).map(h => h.ticker),
-    ...Object.keys(usStats)
-  ]));
-
-  // Realized trades
-  const realizedRows = [];
-  for (const [sym, st] of Object.entries(usStats)) {
-    if (st.sellQty > 0) {
-      const avgBuy = st.buyQty > 0 ? st.buyCostUsd / st.buyQty : 0;
-      const avgSell = st.sellProceedsUsd / st.sellQty;
-      const costSold = avgBuy * st.sellQty;
-      const pnlUsd = st.sellProceedsUsd - costSold;
-      const roi = costSold > 0 ? (pnlUsd / costSold) * 100 : null;
-      realizedRows.push({
-        sym,
-        market: "美股 (USD)",
-        buyQty: st.buyQty,
-        sellQty: st.sellQty,
-        avgBuyStr: `USD $${avgBuy.toFixed(2)}`,
-        avgSellStr: `USD $${avgSell.toFixed(2)}`,
-        pnlUsd,
-        pnlTwd: pnlUsd * usdTwd,
-        proceedsTwd: null,
-        roiPct: roi,
-        status: Math.abs(st.buyQty - st.sellQty) < 1e-6 ? "已全數平倉" : "部分調節"
-      });
-    }
-  }
-  for (const [sym, st] of Object.entries(twStats)) {
-    if (st.sellQty > 0) {
-      const hItem = tickerMap[sym];
-      const avgSell = st.sellProceedsTwd / st.sellQty;
-      let avgBuy = st.buyQty > 0 ? st.buyCostTwd / st.buyQty : null;
-      let roi = null, pnlTwd = null;
-      let status = "部分換股調節";
-      if (hItem && hItem.exactRealizedReplay && hItem.exactRealizedReplay.costSoldNative > 0) {
-        avgBuy = hItem.exactRealizedReplay.costSoldNative / st.sellQty;
-        pnlTwd = hItem.exactRealizedReplay.realizedPnlNative;
-        roi = (pnlTwd / hItem.exactRealizedReplay.costSoldNative) * 100;
-        status = hItem.initQtyResolved > 0 ? "部分調節 (依期初+明細移動平均精算)" : "已依明細移動平均精算";
-      } else if (avgBuy) {
-        pnlTwd = (avgSell - avgBuy) * st.sellQty;
-        roi = ((avgSell - avgBuy) / avgBuy) * 100;
-        if (st.buyQty < st.sellQty || (hItem && hItem.needsInitCost)) {
-          status = "暫以明細內買價估算 (填寫期初均價後即轉為精算)";
-        }
-      } else {
-        status = "期初持股平倉 (無期初買價紀錄)";
-      }
-      realizedRows.push({
-        sym,
-        market: "台股 (TWD)",
-        buyQty: st.buyQty,
-        sellQty: st.sellQty,
-        avgBuyStr: avgBuy ? `NT$${avgBuy.toFixed(2)}` : "期初部位",
-        avgSellStr: `NT$${avgSell.toFixed(2)}`,
-        pnlUsd: null,
-        pnlTwd,
-        proceedsTwd: st.sellProceedsTwd,
-        roiPct: roi,
-        status
-      });
-    }
-  }
-
-  const history = [];
-  let skippedNaCount = 0;
-  for (const hr of (canonical.historyRowsRaw || [])) {
-    if (!hr.isValidLength) continue;
-    if (hr.twCell === "#N/A" || hr.usCell === "#N/A" || hr.totCell === "#N/A") { skippedNaCount++; continue; }
-    const tw = parseNum(hr.twCell), us = parseNum(hr.usCell), tot = parseNum(hr.totCell);
-    const dObj = parseDateLoose(hr.dateStr);
-    if (tot > 0 && dObj) {
-      history.push({ date: hr.dateStr, dateIso: toIsoDateStr(dObj), tw, us, total: tot });
-    }
-  }
-
-  const salaryRows = canonical.salaryRowsRaw || [];
-  const allocRows = canonical.allocRowsRaw || [];
-  let netSalary = 0;
-  for (const r of salaryRows) {
-    const label = String(r[0] || "");
-    if (label.includes("單月總收入") || label.includes("實領") || label.includes("總收入")) {
-      const v = parseNum(r[1]);
-      if (v > 0) netSalary = v;
-    }
-  }
-  const allocations = [];
-  for (const r of allocRows) {
-    if (!r[0]) continue;
-    if (String(r[0]).includes("可分配總收入")) {
-      if (netSalary <= 0) netSalary = parseNum(r[1]);
-      continue;
-    }
-    const amt = parseNum(r[1]);
-    if (amt > 0) allocations.push({ name: r[0], amount: amt, note: r[2] || "" });
-  }
-  if (netSalary <= 0 && allocations.length > 0) {
-    netSalary = allocations.reduce((s, a) => s + a.amount, 0);
-  }
-
-  const benchHelper = parseBenchmarkSeries(canonical.benchRows, usdTwd, allTradeLogs, tickerMap);
-
-  return {
-    usdTwd,
-    rsuTicker,
-    rsuStockPriceUsd,
-    holdings,
-    tickerMap,
-    twKnownTickers,
-    usKnownTickers,
-    twTradesBySym,
-    usTradesBySym,
-    twStats,
-    usStats,
-    twNextRow: canonical.twNextRow,
-    usNextRow: canonical.usNextRow,
-    overviewSheetName: canonical.overviewSheetName,
-    twSheetName: canonical.twSheetName,
-    usSheetName: canonical.usSheetName,
-    overviewColLetters: canonical.ovColLetters,
-    pendingDcaRows,
-    allTradeLogs,
-    totalAssets,
-    twTotal,
-    usTotal,
-    cashTotal,
-    totalExposure,
-    effLeverage,
-    vestedRsu,
-    unvestedRsu,
-    unvestedValueTwd,
-    nextVest,
-    rsuByYear,
-    rsuVests,
-    realizedRows,
-    history,
-    skippedNaCount,
-    netSalary,
-    allocations,
-    benchHelper
-  };
 }
 
 // ==================== Standalone iPhone PWA Cloud Bridge & 0.1s Cache ====================
-function getRuntimeMode() {
-  if (window.google && google.script && google.script.run) return "gas";
-  const forcePwa = typeof location !== "undefined" && new URLSearchParams(location.search).get("pwa") === "1";
-  const host = (typeof location !== "undefined" && location.hostname) ? location.hostname : "";
-  if (!forcePwa && (host === "127.0.0.1" || host === "localhost")) return "localhost";
-  return "pwa";
-}
-
 function hasPwaCloudBridge() {
-  return Boolean(state.pwaConfig && state.pwaConfig.apiUrl && state.pwaConfig.apiToken);
+  return hasPwaBridge(state.pwaConfig);
 }
 
 function isCloudCapable() {
-  return getRuntimeMode() === "gas" || hasPwaCloudBridge();
-}
-
-function validateAppsScriptExecUrl(rawUrl, sourceLabel) {
-  const apiUrl = String(rawUrl || "").trim();
-  const label = sourceLabel || "設定中";
-  if (!apiUrl.startsWith("https://script.google.com/")) {
-    throw new Error(`${label}的 Apps Script 網址無效（需為 https://script.google.com/.../exec）`);
-  }
-  if (/\/dev(?:$|\?)/.test(apiUrl)) {
-    throw new Error(`${label}的網址結尾是 /dev（測試網址，外部手機無法連線）！請到 Apps Script「部署 → 管理部署作業」複製結尾為 /exec 的正式網址重新產生配對碼`);
-  }
-  if (!/\/exec(?:$|\?)/.test(apiUrl)) {
-    throw new Error(`${label}的網址必須以 /exec 結尾（不可貼編輯頁網址），請從「部署 → 管理部署作業」複製網頁應用程式網址`);
-  }
-  return apiUrl;
-}
-
-function parsePairingCode(rawStr) {
-  let s = String(rawStr || "").trim();
-  if (!s) throw new Error("請貼上配對碼");
-  const prefixIdx = s.indexOf("WDB1:");
-  if (prefixIdx >= 0) s = s.slice(prefixIdx + 5);
-  s = s.replace(/\s+/g, "").replace(/^["'`]+|["'`]+$/g, "");
-  let decoded;
-  try {
-    const jsonStr = decodeURIComponent(escape(atob(s)));
-    decoded = JSON.parse(jsonStr);
-  } catch (_) {
-    throw new Error("配對碼格式不正確，請重新從 Google Sheet 選單複製 WDB1:... 配對碼");
-  }
-  const apiUrl = validateAppsScriptExecUrl(decoded && decoded.u, "配對碼內");
-  const apiToken = String((decoded && decoded.t) || "").trim();
-  if (apiToken.length < 16) {
-    throw new Error("配對碼內的加密金鑰無效");
-  }
-  return { apiUrl, apiToken };
-}
-
-function encodePairingCode(apiUrl, apiToken) {
-  const cleanUrl = validateAppsScriptExecUrl(apiUrl, "目前設定中");
-  const cleanToken = String(apiToken || "").trim();
-  if (cleanToken.length < 16) {
-    throw new Error("目前沒有有效的 256-bit 加密連線金鑰");
-  }
-  const raw = JSON.stringify({ u: cleanUrl, t: cleanToken });
-  return "WDB1:" + btoa(unescape(encodeURIComponent(raw)));
+  return isCloudCapableBridge(state.pwaConfig);
 }
 
 function savePwaConfig(cfg) {
@@ -717,278 +78,23 @@ function savePwaConfig(cfg) {
     apiUrl: String((cfg && cfg.apiUrl) || "").trim(),
     apiToken: String((cfg && cfg.apiToken) || "").trim()
   };
-  try {
-    localStorage.setItem("wealth_pwa_config_v1", JSON.stringify(state.pwaConfig));
-  } catch (_) {}
+  persistPwaConfigLocal(state.pwaConfig);
   updatePwaModalUi();
 }
 
-function saveSnapshotCache(res) {
-  if (!res || !res.sheets) return;
-  try {
-    const snap = {
-      spreadsheetTitle: res.spreadsheetTitle || state.spreadsheetTitle,
-      spreadsheetUrl: res.spreadsheetUrl || state.spreadsheetUrl,
-      updatedAt: res.updatedAt || new Date().toISOString(),
-      customCosts: res.customCosts || state.customCosts,
-      rebalanceTargets: res.rebalanceTargets || state.rebTargets,
-      monthlyReportConfig: res.monthlyReportConfig || state.repConfig,
-      overviewFormulas: res.overviewFormulas || state.overviewFormulas || [],
-      sheets: res.sheets
-    };
-    localStorage.setItem("wealth_pwa_snapshot_v1", JSON.stringify(snap));
-  } catch (_) {}
-}
-
-function loadSnapshotCache() {
-  try {
-    const raw = localStorage.getItem("wealth_pwa_snapshot_v1");
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return (parsed && parsed.sheets) ? parsed : null;
-  } catch (_) {
-    return null;
-  }
-}
-
-function buildDemoDashboardPayload() {
-  const today = new Date();
-  const isoToday = `${today.getFullYear()}/${today.getMonth() + 1}/${today.getDate()}`;
-  const yr = today.getFullYear();
-  const histRows = [["日期", "台股資產", "美股資產", "總資產"]];
-  const basePts = [
-    [10, 420000, 310000, 980000],
-    [9, 445000, 325000, 1020000],
-    [8, 460000, 340000, 1065000],
-    [7, 452000, 332000, 1054000],
-    [6, 488000, 355000, 1118000],
-    [5, 515000, 378000, 1168000],
-    [4, 535000, 395000, 1210000],
-    [3, 560000, 422000, 1265000],
-    [2, 585000, 448000, 1320000],
-    [1, 610000, 475000, 1375000],
-    [0, 622600, 489578, 1597178]
-  ];
-  for (const [mAgo, tw, us, tot] of basePts) {
-    const d = new Date(today.getFullYear(), today.getMonth() - mAgo, mAgo === 0 ? today.getDate() : 15);
-    histRows.push([`${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`, String(tw), String(us), String(tot)]);
-  }
-
-  const ovRows = [
-    ["資產項目", "持有股數", "目前股價", "台幣現值", "佔比", "備註", "期初未記錄股數", "期初成本均價"],
-    ["台幣活存", "", "", "NT$290,000", "18.16%", "Demo 緊急預備金", "", ""],
-    ["美金外幣帳戶", "", "", "NT$195,000", "12.21%", "約 USD $6,000 (USD/TWD 32.5)", "", ""],
-    ["元大台灣50", "5200", "NT$62.50", "NT$325,000", "20.35%", "以當日TPE:0050股價計", "3000", "48.00"],
-    ["台積電", "280", "NT$1,062.86", "NT$297,600", "18.63%", "以當日TPE:2330股價計", "100", "760.00"],
-    ["Vanguard 全球股票 (VT)", "55", "USD $120.40", "NT$215,215", "13.47%", "以當日VT股價及匯率計", "", ""],
-    ["Vanguard 標普500 (VOO)", "12", "USD $528.50", "NT$206,115", "12.90%", "以當日VOO股價及匯率計", "", ""],
-    ["ACME 公司股票 (RSU)", "12", "USD $175.00", "NT$68,250", "4.27%", "以當日ACME股價及匯率計", "", ""],
-    ["現金部位資產", "", "", "NT$485,000", "", "", "", ""],
-    ["台股部位資產", "", "", "NT$622,600", "", "", "", ""],
-    ["美股部位資產", "", "", "NT$489,578", "", "", "", ""],
-    ["當前總資產", "", "", "NT$1,597,178", "100.00%", "", "", ""],
-    ["資產槓桿比", "0.70", "", "", "", "", "", ""]
-  ];
-
-  const ovFormulas = [
-    ["資產項目", "持有股數", "目前股價", "台幣現值", "佔比", "備註", "期初未記錄股數", "期初成本均價"],
-    ["台幣活存", "", "", 290000, "=ROUND(D2/D$12*100,2)", "Demo 緊急預備金", "", ""],
-    ["美金外幣帳戶", "", "", '=6000*GOOGLEFINANCE("CURRENCY:USDTWD")', "=ROUND(D3/D$12*100,2)", "約 USD $6,000", "", ""],
-    ["元大台灣50", '=SUMIFS(\'台股交易明細\'!$G:$G,\'台股交易明細\'!$D:$D,"TPE:0050",\'台股交易明細\'!$B:$B,"買入")', '=GOOGLEFINANCE("TPE:0050","price")', "=FLOOR(B4*C4)", "=ROUND(D4/D$12*100,2)", "以當日TPE:0050股價計", 3000, 48],
-    ["台積電", '=SUMIFS(\'台股交易明細\'!$G:$G,\'台股交易明細\'!$D:$D,"TPE:2330",\'台股交易明細\'!$B:$B,"買入")', '=GOOGLEFINANCE("TPE:2330","price")', "=FLOOR(B5*C5)", "=ROUND(D5/D$12*100,2)", "以當日TPE:2330股價計", 100, 760],
-    ["Vanguard 全球股票 (VT)", '=SUMIFS(\'美股交易明細\'!$G:$G,\'美股交易明細\'!$D:$D,"VT",\'美股交易明細\'!$B:$B,"買入")', '=GOOGLEFINANCE("VT","price")', '=ROUND(B6*C6*GOOGLEFINANCE("CURRENCY:USDTWD"))', "=ROUND(D6/D$12*100,2)", "以當日VT股價及匯率計", "", ""],
-    ["Vanguard 標普500 (VOO)", '=SUMIFS(\'美股交易明細\'!$G:$G,\'美股交易明細\'!$D:$D,"VOO",\'美股交易明細\'!$B:$B,"買入")', '=GOOGLEFINANCE("VOO","price")', '=ROUND(B7*C7*GOOGLEFINANCE("CURRENCY:USDTWD"))', "=ROUND(D7/D$12*100,2)", "以當日VOO股價及匯率計", "", ""],
-    ["ACME 公司股票 (RSU)", 12, '=GOOGLEFINANCE("ACME","price")', '=ROUND(B8*C8*GOOGLEFINANCE("CURRENCY:USDTWD"))', "=ROUND(D8/D$12*100,2)", "以當日ACME股價及匯率計", "", ""],
-    ["現金部位資產", "", "", "=SUM(D2:D3)", "", "", "", ""],
-    ["台股部位資產", "", "", "=SUM(D4:D5)", "", "", "", ""],
-    ["美股部位資產", "", "", "=SUM(D6:D8)", "", "", "", ""],
-    ["當前總資產", "", "", "=SUM(D2:D8)", "=SUM(E2:E8)", "", "", ""],
-    ["資產槓桿比", "=(D10+D11)/D12", "", "", "", "", "", ""]
-  ];
-
-  const twTrades = [
-    ["日期", "買賣別", "交易性質", "股票代碼", "金額", "成交股價", "股數", "手續費", "備註"],
-    [`${yr - 1}/6/12`, "買入", "定期定額", "TPE:0050", "55000", "55.00", "1000", "1", "Demo 定期定額"],
-    [`${yr - 1}/11/15`, "買入", "定期定額", "TPE:0050", "69600", "58.00", "1200", "1", "Demo 定期定額"],
-    [`${yr}/2/18`, "買入", "一次買入", "TPE:2330", "169200", "940.00", "180", "1", "Demo 加碼"],
-    [isoToday, "買入", "定期定額", "TPE:0050", "12000", "", "", "1", "待成交範例（可點回填測試）"]
-  ];
-
-  const usTrades = [
-    ["日期", "買賣別", "交易性質", "股票代碼", "金額(USD)", "成交股價(USD)", "股數", "備註", "匯率"],
-    [`${yr - 1}/8/10`, "買入", "一次買入", "VT", "3360", "112.00", "30", "Demo 核心全球", "32.50"],
-    [`${yr - 1}/12/05`, "買入", "一次買入", "VOO", "5880", "490.00", "12", "Demo 標普500", "32.50"],
-    [`${yr}/3/20`, "買入", "一次買入", "VT", "2925", "117.00", "25", "Demo 分批投入", "32.50"]
-  ];
-
-  const rsuRows = [
-    ["歸屬日期", "股票代碼", "股數"],
-    [`${yr - 1}/10/25`, "ACME", "6"],
-    [`${yr}/4/25`, "ACME", "6"],
-    [`${yr}/10/25`, "ACME", "6"],
-    [`${yr + 1}/4/25`, "ACME", "6"]
-  ];
-
-  const salaryRows = [
-    ["項目", "金額", "備註"],
-    ["單月總收入", "95000", "Demo 薪資實領範例"]
-  ];
-
-  const allocRows = [
-    ["分配項目", "每月金額", "備註"],
-    ["可分配總收入", "95000", ""],
-    ["定期定額台股 0050", "18000", "核心市值"],
-    ["定期定額美股 VT", "18000", "全球配置"],
-    ["緊急預備與活存", "12000", "高利活存"],
-    ["每月生活開支", "47000", "房租與日常"]
-  ];
-
-  const benchRows = [
-    ["0050日期", "TPE:0050", "VT日期", "VT", "VOO日期", "VOO", "QQQ日期", "QQQ", "匯率日期", "USDTWD"],
-    ["", "", "", "", "", "", "", "", "", ""],
-    [`${yr - 1}/6/12`, "55.00", `${yr - 1}/6/12`, "108.00", `${yr - 1}/6/12`, "455.00", `${yr - 1}/6/12`, "440.00", `${yr - 1}/6/12`, "32.20"],
-    [`${yr}/1/15`, "59.80", `${yr}/1/15`, "116.50", `${yr}/1/15`, "502.00", `${yr}/1/15`, "495.00", `${yr}/1/15`, "32.60"],
-    [isoToday, "62.50", isoToday, "120.40", isoToday, "528.50", isoToday, "515.00", isoToday, "32.50"]
-  ];
-
-  return {
-    ok: true,
-    isDemo: true,
-    schemaVersion: 2,
-    spreadsheetTitle: "範例帳本 (Demo Mode)",
-    spreadsheetUrl: "#demo",
-    updatedAt: `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")} Demo`,
-    rebalanceTargets: { twPct: 45, usPct: 35, cashPct: 20, targetLev: 1.0, mode: "inflow", newCashTwd: 36000 },
-    overviewFormulas: ovFormulas,
-    sheets: {
-      "整體財務狀況": ovRows,
-      "台股交易明細": twTrades,
-      "美股交易明細": usTrades,
-      "公司股票明細": rsuRows,
-      "歷史紀錄": histRows,
-      "每月薪資明細": salaryRows,
-      "每月收入分配": allocRows,
-      "_大盤基準快取": benchRows
-    }
-  };
-}
-
 function simulateDemoWrite(gasMethod, payload) {
-  const sheets = JSON.parse(JSON.stringify(state.rawSheets || {}));
-  const ovFormulas = JSON.parse(JSON.stringify(state.overviewFormulas || []));
-  const ovEntry = resolveSheetEntry(sheets, "overview");
-  const twEntry = resolveSheetEntry(sheets, "twTrades");
-  const usEntry = resolveSheetEntry(sheets, "usTrades");
-  const ovRows = ovEntry.rows;
-  const ovMap = resolveHeaderMap(ovRows[0] || [], OVERVIEW_HEADER_SPECS);
   const fx = (state.computed && state.computed.usdTwd) || 32.5;
-  let msg = "已在 Demo 模式模擬更新！";
-
-  if (gasMethod === "submitTrade") {
-    const mkt = String(payload.market || "TW").toUpperCase();
-    const isTw = mkt === "TW";
-    const entry = isTw ? twEntry : usEntry;
-    const specs = isTw ? TW_TRADE_HEADER_SPECS : US_TRADE_HEADER_SPECS;
-    const trMap = resolveHeaderMap(entry.rows[0] || [], specs);
-    const ticker = String(payload.ticker || "").trim().toUpperCase();
-    const side = normalizeSideLabel(payload.side || "買入");
-    const px = payload.price !== "" ? parseFloat(payload.price) : null;
-    const sh = payload.shares !== "" ? parseFloat(payload.shares) : 0;
-    const fee = payload.fee !== "" ? parseFloat(payload.fee) : (isTw ? 1 : 0);
-    const amt = payload.amount !== "" ? parseFloat(payload.amount) : (px && sh ? +(px * sh + (isTw ? (side === "買入" ? fee : -fee) : 0)).toFixed(2) : 0);
-    const width = Math.max((entry.rows[0] || []).length, 9);
-    const rowArr = new Array(width).fill("");
-    const put = (col, val) => { if (col >= 0) rowArr[col] = val; };
-    put(trMap.date, String(payload.date || todayIsoStr()).replace(/-/g, "/"));
-    put(trMap.side, side);
-    put(trMap.kind, String(payload.tradeType || "一次買入"));
-    put(trMap.ticker, ticker);
-    put(trMap.amount, amt ? String(amt) : "");
-    put(trMap.price, px !== null ? String(px) : "");
-    put(trMap.shares, sh > 0 ? String(sh) : (amt && px ? String(Math.floor(amt / px)) : ""));
-    if (trMap.fee >= 0) put(trMap.fee, String(fee));
-    if (trMap.note >= 0) put(trMap.note, String(payload.note || ""));
-    entry.rows.push(rowArr);
-
-    // Update or insert holding in Demo overview
-    const matchIdx = ovRows.findIndex((r, idx) => {
-      if (idx === 0) return false;
-      const m = extractRowMeta(r, ovFormulas[idx], ovMap);
-      return m.ticker === ticker || String(r[ovMap.name] || "").trim().toUpperCase() === ticker;
-    });
-    if (matchIdx > 0 && sh > 0) {
-      const r = ovRows[matchIdx];
-      const oldQ = parseNum(r[ovMap.qty]);
-      const nextQ = Math.max(0, +(oldQ + (side === "買入" ? sh : -sh)).toFixed(4));
-      const uPx = parseNum(r[ovMap.unitPrice]) || px || 0;
-      r[ovMap.qty] = String(nextQ);
-      if (uPx > 0) {
-        const nextTwd = Math.round(nextQ * uPx * (isTw ? 1 : fx));
-        r[ovMap.valueTwd] = `NT$${nextTwd.toLocaleString("en-US")}`;
-      }
-    } else if (matchIdx < 0 && side === "買入" && payload.addToOverview && sh > 0) {
-      const sumAnchor = ovRows.findIndex((r, idx) => idx > 0 && String(r[ovMap.name] || "").trim() === (isTw ? "台股部位資產" : "美股部位資產"));
-      const insertAt = sumAnchor > 0 ? sumAnchor : ovRows.length;
-      const uPx = px || 100;
-      const twdVal = Math.round(sh * uPx * (isTw ? 1 : fx));
-      const newRow = new Array(Math.max(ovRows[0].length, 8)).fill("");
-      newRow[ovMap.name] = String(payload.displayName || "").trim() || ticker.replace("TPE:", "");
-      newRow[ovMap.qty] = String(sh);
-      newRow[ovMap.unitPrice] = isTw ? `NT$${uPx.toFixed(2)}` : `USD $${uPx.toFixed(2)}`;
-      newRow[ovMap.valueTwd] = `NT$${twdVal.toLocaleString("en-US")}`;
-      newRow[ovMap.note] = `以當日${ticker}股價計 (Demo)`;
-      ovRows.splice(insertAt, 0, newRow);
-      const newForm = [...newRow];
-      newForm[ovMap.unitPrice] = `=GOOGLEFINANCE("${ticker}","price")`;
-      ovFormulas.splice(insertAt, 0, newForm);
-    }
-    msg = `🧪 Demo 模式：已模擬寫入 ${ticker} ${side}紀錄`;
-  } else if (gasMethod === "updateCashBalance") {
-    const acct = String(payload.accountName || "").trim();
-    const amt = Number(payload.amount || 0);
-    const r = ovRows.find((row, idx) => idx > 0 && String(row[ovMap.name] || "").trim() === acct);
-    if (r) {
-      const mult = acct.includes("日圓") ? 0.22 : (acct.includes("美金") ? fx : 1);
-      r[ovMap.valueTwd] = `NT$${Math.round(amt * mult).toLocaleString("en-US")}`;
-      if (payload.updateNote && ovMap.note >= 0) r[ovMap.note] = String(payload.note || "");
-    }
-    msg = `🧪 Demo 模式：已更新「${acct}」模擬餘額`;
-  } else if (gasMethod === "fillPendingDca") {
-    const rn = Number(payload.rowNumber || 0) - 1;
-    const px = Number(payload.price || 0);
-    const twMap = resolveHeaderMap(twEntry.rows[0] || [], TW_TRADE_HEADER_SPECS);
-    if (rn >= 1 && rn < twEntry.rows.length && px > 0) {
-      const row = twEntry.rows[rn];
-      const amt = parseNum(row[twMap.amount]);
-      row[twMap.price] = String(px);
-      row[twMap.shares] = String(Math.floor(amt / px));
-    }
-    msg = `🧪 Demo 模式：已回填第 #${payload.rowNumber} 列模擬成交價`;
-  } else if (gasMethod === "updateInitialCost") {
-    const name = String(payload.holdingName || "").trim();
-    const r = ovRows.find((row, idx) => idx > 0 && String(row[ovMap.name] || "").trim() === name);
-    if (r) {
-      while (r.length <= Math.max(ovMap.initQty, ovMap.initCost)) r.push("");
-      r[ovMap.initQty] = String(payload.initQty ?? "");
-      r[ovMap.initCost] = String(payload.initAvgCost ?? "");
-    }
-    msg = `🧪 Demo 模式：已暫存「${name}」期初成本設定`;
-  }
-
-  applyPayloadToState(
-    {
-      ok: true,
-      isDemo: true,
-      spreadsheetTitle: state.spreadsheetTitle || "範例帳本 (Demo Mode)",
-      spreadsheetUrl: "#demo",
-      updatedAt: "Demo 即時模擬",
-      sheets,
-      overviewFormulas: ovFormulas
-    },
-    "🧪 Demo 展示預覽模式 · 貼上配對碼即可切換真實帳本"
+  const { payload: nextPayload, toastMessage } = applyDemoMutation(
+    state.rawSheets,
+    state.overviewFormulas,
+    fx,
+    gasMethod,
+    payload,
+    state.spreadsheetTitle
   );
+  applyPayloadToState(nextPayload, "🧪 Demo 展示預覽模式 · 貼上配對碼即可切換真實帳本");
   populateModalControls();
-  showToast(msg);
+  showToast(toastMessage);
   return true;
 }
 
@@ -1001,7 +107,7 @@ function applyPayloadToState(res, statusText) {
   if (res.updatedAt) state.updatedAt = res.updatedAt;
   if (res.customCosts) {
     state.customCosts = res.customCosts;
-    try { localStorage.setItem("wealth_custom_costs_v1", JSON.stringify(res.customCosts)); } catch (_) {}
+    persistCustomCostsLocal(res.customCosts);
   }
   const demoBanner = document.getElementById("demoModeBanner");
   if (demoBanner) demoBanner.style.display = state.isDemoMode ? "flex" : "none";
@@ -1011,13 +117,6 @@ function applyPayloadToState(res, statusText) {
   if (statusEl && statusText) statusEl.textContent = statusText;
   refreshAllViews();
   updatePwaModalUi();
-}
-
-function formatMaskedExecUrl(apiUrl) {
-  const s = String(apiUrl || "").trim();
-  if (!s) return "";
-  if (s.length <= 46) return s;
-  return `${s.slice(0, 32)}...${s.slice(-18)}`;
 }
 
 function setPwaPairError(msg, apiUrlHint) {
@@ -1051,55 +150,14 @@ function setPwaPairError(msg, apiUrlHint) {
 }
 
 async function callPwaCloudApi(action, payload = {}) {
-  if (!hasPwaCloudBridge()) {
-    openPwaPairModal();
-    throw new Error("請先貼上 Google Sheet 專屬配對碼以連線雲端帳本");
-  }
-  let resp;
   try {
-    resp = await fetch(state.pwaConfig.apiUrl, {
-      method: "POST",
-      redirect: "follow",
-      credentials: "omit",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({
-        token: state.pwaConfig.apiToken,
-        action,
-        payload
-      })
-    });
-  } catch (netErr) {
-    const rawMsg = (netErr && netErr.message) ? netErr.message : String(netErr || "");
-    if (/load failed|failed to fetch|networkerror|cors/i.test(rawMsg)) {
-      throw new Error(
-        `瀏覽器無法跨網域連線至 Apps Script（${rawMsg}）。` +
-        `請檢查：(1) Apps Script 部署「誰可以存取」是否為最底下的「所有人 (Anyone)」（不可選「僅限我自己」或「具有 Google 帳戶的所有人」）；` +
-        `(2) 網址是否為「部署 → 管理部署作業」的最新 /exec；` +
-        `(3) 若有開啟 VPN / iCloud 私密轉送，請暫時關閉重試。`
-      );
+    return await postPwaCloudApi(state.pwaConfig, action, payload);
+  } catch (err) {
+    if (err instanceof PwaCloudApiError && (err.isMissingConfig || err.isUnauthorized)) {
+      openPwaPairModal();
     }
-    throw new Error(`網路連線異常：${rawMsg}`);
+    throw err;
   }
-  const text = await resp.text();
-  let data;
-  try {
-    data = JSON.parse(text);
-  } catch (_) {
-    const looksLikeLogin = /ServiceLogin|accounts\.google|<!doctype|<html/i.test(text || "");
-    throw new Error(
-      looksLikeLogin
-        ? `Apps Script 回傳了登入頁或網頁而非資料（HTTP ${resp.status}）；請確認部署「誰可以存取」已選為「所有人 (Anyone)」且點「建立新版本」！`
-        : `Apps Script 回傳非預期格式（HTTP ${resp.status}），請確認 /exec 部署版本為最新。`
-    );
-  }
-  if (data && data.unauthorized) {
-    openPwaPairModal();
-    throw new Error(data.error || "配對金鑰無效，請重新貼上最新配對碼");
-  }
-  if (!data || data.ok === false) {
-    throw new Error((data && data.error) || `雲端 API 執行失敗（HTTP ${resp.status}）`);
-  }
-  return data;
 }
 
 function updatePwaModalUi() {
@@ -2058,18 +1116,6 @@ function switchMainPage(page) {
 }
 
 // ==================== PAGE 3: SMART REBALANCING & TARGET LEVERAGE ====================
-function getDefaultMonthlyInvestTwd(m) {
-  if (!m || !m.allocations) return 50000;
-  const inv = m.allocations
-    .filter(a => a.name.includes("投資"))
-    .reduce((s, a) => s + a.amount, 0);
-  if (inv > 0) return Math.round(inv);
-  const surplus = m.allocations
-    .filter(a => a.name.includes("結餘"))
-    .reduce((s, a) => s + a.amount, 0);
-  return surplus > 0 ? Math.round(surplus) : 50000;
-}
-
 function renderRebalancePage(m) {
   if (!m) return;
   const rt = state.rebTargets;
@@ -2098,69 +1144,34 @@ function renderRebalancePage(m) {
   syncPair("rebUsRange", "rebUsInput", rt.usPct);
   syncPair("rebCashRange", "rebCashInput", rt.cashPct);
 
-  const rawSum = (Number(rt.twPct) || 0) + (Number(rt.usPct) || 0) + (Number(rt.cashPct) || 0);
+  const plan = computeRebalancePlan(m, rt);
+  const { rawSumPct: rawSum, isSumOk, totCurTwd: totCur, postTotalTwd: postTotal, inflowAmtTwd: inflowAmt, orderRows } = plan;
+
   const sumBadge = document.getElementById("rebSumPctBadge");
-  const isSumOk = Math.abs(rawSum - 100) < 0.15;
   sumBadge.textContent = isSumOk
     ? `✓ 目標合計 ${rawSum.toFixed(1)}%`
     : `⚠️ 目標合計 ${rawSum.toFixed(1)}%（計算已自動依比例正規化）`;
   sumBadge.className = `badge ${isSumOk ? "badge-pos" : "badge-warn"}`;
 
-  const safeSum = rawSum > 0 ? rawSum : 100;
-  const wTarget = {
-    "台股": ((Number(rt.twPct) || 0) / safeSum) * 100,
-    "美股": ((Number(rt.usPct) || 0) / safeSum) * 100,
-    "現金": ((Number(rt.cashPct) || 0) / safeSum) * 100
-  };
-
-  const curVal = { "台股": m.twTotal, "美股": m.usTotal, "現金": m.cashTotal };
-  const totCur = Math.max(1, m.totalAssets);
-  const inflowAmt = rt.mode === "inflow" ? Math.max(0, Number(rt.newCashTwd) || 0) : 0;
-  const postTotal = totCur + inflowAmt;
-
-  const catDelta = { "台股": 0, "美股": 0, "現金": 0 };
-  if (rt.mode === "inflow") {
-    const posGaps = {};
-    let gapSum = 0;
-    for (const c of ["台股", "美股", "現金"]) {
-      const idealVal = (wTarget[c] / 100) * postTotal;
-      const g = Math.max(0, idealVal - curVal[c]);
-      posGaps[c] = g;
-      gapSum += g;
-    }
-    for (const c of ["台股", "美股", "現金"]) {
-      catDelta[c] = gapSum > 0 ? inflowAmt * (posGaps[c] / gapSum) : inflowAmt * (wTarget[c] / 100);
-    }
-  } else {
-    for (const c of ["台股", "美股", "現金"]) {
-      catDelta[c] = (wTarget[c] / 100) * totCur - curVal[c];
-    }
-  }
-
   const updateCatCard = (cat, badgeId, summaryId) => {
-    const curPct = (curVal[cat] / totCur) * 100;
-    const tgtPct = wTarget[cat];
-    const drift = curPct - tgtPct;
+    const c = plan.categories[cat];
     const bEl = document.getElementById(badgeId);
-    if (Math.abs(drift) < 1.0) {
-      bEl.textContent = `目前 ${curPct.toFixed(1)}% (✓ 均衡)`;
+    if (Math.abs(c.driftPct) < 1.0) {
+      bEl.textContent = `目前 ${c.currentPct.toFixed(1)}% (✓ 均衡)`;
       bEl.className = "badge badge-pos";
-    } else if (drift > 0) {
-      bEl.textContent = `目前 ${curPct.toFixed(1)}% (超配 +${drift.toFixed(1)}%)`;
+    } else if (c.driftPct > 0) {
+      bEl.textContent = `目前 ${c.currentPct.toFixed(1)}% (超配 +${c.driftPct.toFixed(1)}%)`;
       bEl.className = "badge badge-warn";
     } else {
-      bEl.textContent = `目前 ${curPct.toFixed(1)}% (低配 ${drift.toFixed(1)}%)`;
+      bEl.textContent = `目前 ${c.currentPct.toFixed(1)}% (低配 ${c.driftPct.toFixed(1)}%)`;
       bEl.className = "badge badge-info";
     }
-    const idealVal = (tgtPct / 100) * postTotal;
-    const dVal = catDelta[cat];
-    const afterPct = ((curVal[cat] + dVal) / postTotal) * 100;
-    const actLabel = Math.abs(dVal) < 500
+    const actLabel = Math.abs(c.deltaTwd) < 500
       ? "維持現狀 (NT$0)"
-      : (dVal > 0 ? `<b style="color:var(--pos);">建議投入 +${fmtTwd(dVal)}</b>` : `<b style="color:var(--neg);">建議調節 ${fmtTwd(dVal, true)}</b>`);
+      : (c.deltaTwd > 0 ? `<b style="color:var(--pos);">建議投入 +${fmtTwd(c.deltaTwd)}</b>` : `<b style="color:var(--neg);">建議調節 ${fmtTwd(c.deltaTwd, true)}</b>`);
     document.getElementById(summaryId).innerHTML = `
-      <div>目前市值：<b>${fmtTwd(curVal[cat])}</b> → 目標基準：<b>${fmtTwd(idealVal)}</b></div>
-      <div>本輪動作：${actLabel}（執行後佔比 <b>${afterPct.toFixed(1)}%</b>）</div>
+      <div>目前市值：<b>${fmtTwd(c.currentValTwd)}</b> → 目標基準：<b>${fmtTwd(c.idealValTwd)}</b></div>
+      <div>本輪動作：${actLabel}（執行後佔比 <b>${c.afterPct.toFixed(1)}%</b>）</div>
     `;
   };
 
@@ -2171,49 +1182,6 @@ function renderRebalancePage(m) {
   document.getElementById("rebOrderSubTitle").textContent = rt.mode === "inflow"
     ? `新資金買入模式：將 ${fmtTwd(inflowAmt)} 優先分配給低配資產（零賣出・免交易稅），並依該類別既有非 RSU 持股權重拆單`
     : `完整再平衡模式：以總資產 ${fmtTwd(m.totalAssets)} 為基準「高賣低買」精準回歸目標佔比（自動排除公司 RSU 股）`;
-
-  // Build per-holding order rows
-  const orderRows = [];
-  for (const cat of ["台股", "美股", "現金"]) {
-    const dCat = catDelta[cat];
-    const candidates = m.holdings.filter(h =>
-      h.category === cat && !h.isRsu && h.key !== "GOOG_UNVESTED"
-    );
-    if (candidates.length === 0) {
-      if (Math.abs(dCat) >= 500) {
-        const fallbackTicker = cat === "台股" ? "TPE:0050" : (cat === "美股" ? "VT" : null);
-        const refPx = fallbackTicker ? (m.benchHelper.getTwdPrice(fallbackTicker, todayIsoStr()) || 0) : 0;
-        orderRows.push({
-          name: fallbackTicker ? `${fallbackTicker} (代表標的)` : `${cat}帳戶`,
-          ticker: fallbackTicker,
-          category: cat,
-          curValTwd: 0,
-          deltaTwd: dCat,
-          isUsd: cat === "美股",
-          marketPrice: cat === "美股" && refPx > 0 ? refPx / m.usdTwd : refPx,
-          afterValTwd: Math.max(0, dCat)
-        });
-      }
-      continue;
-    }
-    const catSubTotal = candidates.reduce((s, h) => s + h.valueTwd, 0);
-    for (const h of candidates) {
-      const shareW = catSubTotal > 0 ? (h.valueTwd / catSubTotal) : (1 / candidates.length);
-      const itemDelta = dCat * shareW;
-      orderRows.push({
-        name: h.name,
-        ticker: h.ticker,
-        category: cat,
-        curValTwd: h.valueTwd,
-        deltaTwd: itemDelta,
-        isUsd: h.isUsdPrice,
-        marketPrice: h.marketPrice,
-        afterValTwd: Math.max(0, h.valueTwd + itemDelta)
-      });
-    }
-  }
-
-  orderRows.sort((a, b) => Math.abs(b.deltaTwd) - Math.abs(a.deltaTwd));
 
   const tbody = document.getElementById("rebOrdersTbody");
   tbody.innerHTML = orderRows.map((row, idx) => {
@@ -2365,8 +1333,9 @@ function renderRebalancePage(m) {
   });
 
   // Target Leverage Tuner
+  const levPlan = computeLeveragePlan(m, rt.targetLev);
+  const tLev = levPlan.targetLev;
   document.getElementById("rebCurLevBadge").textContent = `目前 ${m.effLeverage.toFixed(3)}x`;
-  const tLev = Number(rt.targetLev) || Number(m.effLeverage.toFixed(2)) || 1.15;
   const levRangeEl = document.getElementById("rebTargetLevRange");
   const levInputEl = document.getElementById("rebTargetLevInput");
   if (document.activeElement !== levRangeEl) levRangeEl.value = Math.min(1.6, Math.max(0.8, tLev));
@@ -2375,50 +1344,45 @@ function renderRebalancePage(m) {
     c.classList.toggle("active", Math.abs(Number(c.dataset.lev) - tLev) < 0.006)
   );
 
-  const targetExp = tLev * m.totalAssets;
-  const deltaExp = targetExp - m.totalExposure;
-  const tw1x = m.holdings.find(h => h.category === "台股" && !h.isLev2x && h.ticker) || m.tickerMap["TPE:0050"];
-  const tw2x = m.holdings.find(h => h.category === "台股" && h.isLev2x && h.ticker) || m.tickerMap["TPE:00685L"];
-  const us1x = m.holdings.find(h => h.category === "美股" && !h.isLev2x && !h.isRsu && h.ticker) || m.tickerMap["QQQ"] || m.tickerMap["VT"];
-  const us2x = m.holdings.find(h => h.category === "美股" && h.isLev2x && h.ticker) || m.tickerMap["QLD"];
-
   const levBox = document.getElementById("rebLevPlanBox");
   const summaryStatsHtml = `
     <div class="preview-card" style="margin-top:0;">
       <div class="preview-row" style="margin-top:0;"><span>目前總曝險市值：</span><b>${fmtTwd(m.totalExposure)} (${m.effLeverage.toFixed(3)}x)</b></div>
-      <div class="preview-row"><span>目標總曝險市值：</span><b>${fmtTwd(targetExp)} (${tLev.toFixed(2)}x)</b></div>
-      <div class="preview-row"><span>需增減曝險差額：</span><b style="color:${Math.abs(deltaExp) < 5000 ? "var(--pos)" : "var(--accent)"};">${fmtTwd(deltaExp, true)}</b></div>
+      <div class="preview-row"><span>目標總曝險市值：</span><b>${fmtTwd(levPlan.targetExposureTwd)} (${tLev.toFixed(2)}x)</b></div>
+      <div class="preview-row"><span>需增減曝險差額：</span><b style="color:${levPlan.isBalanced ? "var(--pos)" : "var(--accent)"};">${fmtTwd(levPlan.deltaExposureTwd, true)}</b></div>
     </div>
   `;
 
-  if (Math.abs(deltaExp) < 5000) {
+  if (levPlan.isBalanced) {
     levBox.innerHTML = summaryStatsHtml + `
       <div class="helper-box" style="border-color:var(--pos);">
         <b style="color:var(--pos);">✓ 目前實質槓桿 (${m.effLeverage.toFixed(3)}x) 已精準落在目標區間內</b>，無需進行換股調節！
       </div>
     `;
   } else {
-    const absSwap = Math.abs(deltaExp);
-    const isUp = deltaExp > 0;
-    const tw1Sym = tw1x ? (tw1x.ticker || tw1x.name) : "TPE:0050";
-    const tw2Sym = tw2x ? (tw2x.ticker || tw2x.name) : "TPE:00685L";
-    const tw1Px = tw1x && tw1x.marketPrice > 0 ? tw1x.marketPrice : (m.benchHelper.getTwdPrice("TPE:0050", todayIsoStr()) || 0);
-    const tw2Px = tw2x && tw2x.marketPrice > 0 ? tw2x.marketPrice : 0;
-
-    const us1Sym = us1x ? (us1x.ticker || us1x.name) : "QQQ";
-    const us2Sym = us2x ? (us2x.ticker || us2x.name) : "QLD";
-    const us1Px = us1x && us1x.marketPrice > 0 ? us1x.marketPrice : 0;
-    const us2Px = us2x && us2x.marketPrice > 0 ? us2x.marketPrice : 0;
-    const swapUsd = absSwap / m.usdTwd;
+    const {
+      absSwapTwd: absSwap,
+      isIncrease: isUp,
+      tw1Sym,
+      tw2Sym,
+      tw1Px,
+      tw2Px,
+      us1Sym,
+      us2Sym,
+      us1Px,
+      us2Px,
+      swapUsd,
+      cur2xTotalTwd: cur2xTotal,
+      minStockLev
+    } = levPlan;
 
     const twSh1 = tw1Px > 0 ? `約 ${fmtQty(Math.round(absSwap / tw1Px), " 股")}` : "";
     const twSh2 = tw2Px > 0 ? `約 ${fmtQty(Math.round(absSwap / tw2Px), " 股")}` : "";
     const usSh1 = us1Px > 0 ? `約 ${fmtQty(Number((swapUsd / us1Px).toFixed(2)), " 股")}` : "";
     const usSh2 = us2Px > 0 ? `約 ${fmtQty(Number((swapUsd / us2Px).toFixed(2)), " 股")}` : "";
 
-    const cur2xTotal = m.holdings.filter(h => h.isLev2x).reduce((s, h) => s + h.valueTwd, 0);
     const cashFloorNote = (!isUp && absSwap > cur2xTotal)
-      ? `<div style="color:var(--warn);font-size:12px;margin-top:4px;">⚠️ 提醒：目前 2 倍槓桿 ETF 總市值為 ${fmtTwd(cur2xTotal)}，全數換回 1 倍原型 ETF 後最低槓桿為 ${((m.twTotal + m.usTotal) / m.totalAssets).toFixed(2)}x；若要再往下降至 ${tLev.toFixed(2)}x，需將部分股票轉為現金存款。</div>`
+      ? `<div style="color:var(--warn);font-size:12px;margin-top:4px;">⚠️ 提醒：目前 2 倍槓桿 ETF 總市值為 ${fmtTwd(cur2xTotal)}，全數換回 1 倍原型 ETF 後最低槓桿為 ${minStockLev.toFixed(2)}x；若要再往下降至 ${tLev.toFixed(2)}x，需將部分股票轉為現金存款。</div>`
       : "";
 
     levBox.innerHTML = summaryStatsHtml + `
@@ -2446,306 +1410,6 @@ function renderRebalancePage(m) {
 }
 
 // ==================== PAGE 4: XIRR VS BENCHMARK COMPARISON ====================
-const XIRR_BENCH_LIST = [
-  { key: "BLEND_50_50", label: "50% 0050 + 50% VT (台美均衡)", short: "50/50 台美均衡" },
-  { key: "TPE:0050", label: "0050 (元大台灣50)", short: "0050 (台灣50)" },
-  { key: "VT", label: "VT (全球股市 ETF)", short: "VT (全球股市)" },
-  { key: "VOO", label: "VOO (標普500 ETF)", short: "VOO (標普500)" },
-  { key: "QQQ", label: "QQQ (納指100 ETF)", short: "QQQ (納指100)" }
-];
-
-function simulateShadowBenchmark(events, evalDatesIso, endIso, benchKey, bh) {
-  const evByDay = new Map();
-  for (const e of events) {
-    if (!e.iso || !Number.isFinite(e.investTwd)) continue;
-    evByDay.set(e.iso, (evByDay.get(e.iso) || 0) + e.investTwd);
-  }
-  const allIsoSet = new Set([...evByDay.keys(), ...evalDatesIso, endIso]);
-  const timeline = Array.from(allIsoSet).filter(d => d && d <= endIso).sort();
-
-  let shSingle = 0;
-  let sh50 = 0, shVT = 0;
-  const valAtIso = new Map();
-
-  for (const dIso of timeline) {
-    const flow = evByDay.get(dIso) || 0;
-    if (benchKey === "BLEND_50_50") {
-      const px50 = bh.getTwdPrice("TPE:0050", dIso) || 100;
-      const pxVT = bh.getTwdPrice("VT", dIso) || 4000;
-      if (flow > 0) {
-        sh50 += (0.5 * flow) / px50;
-        shVT += (0.5 * flow) / pxVT;
-      } else if (flow < 0) {
-        const wAmt = -flow;
-        const v50 = sh50 * px50, vVT = shVT * pxVT, vTot = v50 + vVT;
-        if (vTot > 1e-3) {
-          sh50 -= (wAmt * (v50 / vTot)) / px50;
-          shVT -= (wAmt * (vVT / vTot)) / pxVT;
-        } else {
-          sh50 -= (0.5 * wAmt) / px50;
-          shVT -= (0.5 * wAmt) / pxVT;
-        }
-      }
-      valAtIso.set(dIso, sh50 * px50 + shVT * pxVT);
-    } else {
-      const px = bh.getTwdPrice(benchKey, dIso) || 100;
-      if (flow !== 0) shSingle += flow / px;
-      valAtIso.set(dIso, shSingle * px);
-    }
-  }
-
-  const endVal = valAtIso.get(endIso) || 0;
-  const benchCfs = events.map(e => ({ iso: e.iso, amount: -e.investTwd }));
-  benchCfs.push({ iso: endIso, amount: endVal });
-  const xirrPct = solveXirrPct(benchCfs);
-
-  return { endVal, xirrPct, valAtIso };
-}
-
-function computeXirrComparison(m, scope) {
-  const bh = m.benchHelper;
-  let effectiveScope = scope;
-  if (effectiveScope.startsWith("HIST_") && (!m.history || m.history.length < 2)) {
-    effectiveScope = "TRADES_ALL";
-  }
-
-  let events = [];
-  let curveBase = [];
-  let startIso = "", endIso = "", portEndVal = 0;
-  let externalFlowCount = 0;
-
-  if (effectiveScope.startsWith("HIST_")) {
-    const dayMap = { HIST_ALL: 99999, HIST_180: 180, HIST_90: 90, HIST_30: 30 };
-    const nDays = dayMap[effectiveScope] || 99999;
-    const pts = nDays >= 99999 ? m.history : m.history.slice(-Math.min(m.history.length, nDays));
-    const first = pts[0], last = pts[pts.length - 1];
-    startIso = first.dateIso;
-    endIso = last.dateIso;
-    const initStockVal = first.tw + first.us;
-    portEndVal = last.tw + last.us;
-
-    events.push({ iso: startIso, investTwd: initStockVal });
-
-    for (const l of m.allTradeLogs) {
-      if (!l.dateIso || l.isPendingQty || l.dateIso <= startIso || l.dateIso > endIso) continue;
-      if (l.kind.includes("股息") || l.kind.includes("股利")) continue;
-      const fx = bh.getFx(l.dateIso);
-      const amtTwd = l.market === "台股" ? (l.amtTwd || 0) : ((l.amtUsd || 0) * fx);
-      if (amtTwd <= 0) continue;
-      events.push({ iso: l.dateIso, investTwd: l.side === "買入" ? amtTwd : -amtTwd });
-      externalFlowCount++;
-    }
-
-    // Account for RSU vestings inside (startIso, endIso] so new grants don't masquerade as investment alpha
-    if (m.rsuVests && m.rsuStockPriceUsd > 0) {
-      for (const v of m.rsuVests) {
-        if (v.dateIso > startIso && v.dateIso <= endIso) {
-          const vestValTwd = v.shares * m.rsuStockPriceUsd * bh.getFx(v.dateIso);
-          events.push({ iso: v.dateIso, investTwd: vestValTwd });
-          externalFlowCount++;
-        }
-      }
-    }
-
-    curveBase = pts.map(p => ({ label: p.date, iso: p.dateIso, portVal: p.tw + p.us }));
-  } else {
-    // TRADES_ALL: Chronological logged trades since very first recorded buy/sell
-    const asc = m.allTradeLogs
-      .filter(l => !l.isPendingQty && l.dateIso && l.adjQty > 0)
-      .slice()
-      .sort((a, b) => a.dateSort - b.dateSort || (a.side === "買入" ? -1 : 1) || a.sheetRow - b.sheetRow);
-
-    const loggedQty = {};
-    const snapDates = new Set();
-    for (const l of asc) {
-      const sym = l.sym;
-      if (!loggedQty[sym]) loggedQty[sym] = 0;
-      const fx = bh.getFx(l.dateIso);
-      if (l.side === "買入") {
-        loggedQty[sym] += l.adjQty;
-        if (!l.kind.includes("股息") && !l.kind.includes("股利")) {
-          const amt = l.market === "台股" ? (l.amtTwd || 0) : ((l.amtUsd || 0) * fx);
-          if (amt > 0) {
-            events.push({ iso: l.dateIso, investTwd: amt });
-            snapDates.add(l.dateIso);
-            externalFlowCount++;
-          }
-        }
-      } else if (l.side === "賣出") {
-        const avail = Math.max(0, loggedQty[sym]);
-        const matched = Math.min(avail, l.adjQty);
-        loggedQty[sym] = Math.max(0, avail - matched);
-        if (matched > 0) {
-          const rawP = l.market === "台股" ? (l.amtTwd || 0) : ((l.amtUsd || 0) * fx);
-          const matchedProceeds = rawP * (matched / l.adjQty);
-          if (matchedProceeds > 0) {
-            events.push({ iso: l.dateIso, investTwd: -matchedProceeds });
-            snapDates.add(l.dateIso);
-            externalFlowCount++;
-          }
-        }
-      }
-    }
-
-    endIso = todayIsoStr();
-    startIso = events.length ? events[0].iso : endIso;
-    portEndVal = 0;
-    for (const [sym, q] of Object.entries(loggedQty)) {
-      if (q <= 1e-6) continue;
-      const h = m.tickerMap[sym];
-      if (h && h.marketPrice > 0) {
-        portEndVal += q * h.marketPrice * (h.isUsdPrice ? m.usdTwd : 1);
-      } else {
-        const bPx = bh.getTwdPrice(sym, endIso);
-        if (bPx) portEndVal += q * bPx;
-      }
-    }
-
-    // Build curve points: use history points where available, preceded by trade dates
-    const histMap = new Map((m.history || []).map(p => [p.dateIso, p]));
-    const sampleIsos = Array.from(new Set([...snapDates, ...(m.history || []).map(p => p.dateIso), endIso]))
-      .filter(d => d >= startIso && d <= endIso)
-      .sort();
-
-    // Compute running cumulative net invested for dates before history started
-    let cumInv = 0;
-    const evMap = new Map();
-    for (const e of events) evMap.set(e.iso, (evMap.get(e.iso) || 0) + e.investTwd);
-
-    curveBase = sampleIsos.map((dIso, idx) => {
-      cumInv += evMap.get(dIso) || 0;
-      if (dIso === endIso) return { label: dIso.replace(/-/g, "/"), iso: dIso, portVal: portEndVal };
-      // Interpolate smoothly from cumulative capital to terminal gain across time
-      const t0 = parseDateLoose(startIso)?.getTime() || 0;
-      const t1 = parseDateLoose(endIso)?.getTime() || 1;
-      const ti = parseDateLoose(dIso)?.getTime() || t0;
-      const prog = t1 > t0 ? (ti - t0) / (t1 - t0) : 1;
-      const totNetInv = events.reduce((s, x) => s + x.investTwd, 0);
-      const totProfit = portEndVal - totNetInv;
-      return { label: dIso.replace(/-/g, "/"), iso: dIso, portVal: Math.max(0, cumInv + totProfit * prog) };
-    });
-  }
-
-  const netInvestedTwd = events.reduce((s, e) => s + e.investTwd, 0);
-  const netProfitTwd = portEndVal - netInvestedTwd;
-  const simpleReturnPct = netInvestedTwd > 0 ? (netProfitTwd / netInvestedTwd) * 100 : 0;
-
-  const portCfs = events.map(e => ({ iso: e.iso, amount: -e.investTwd }));
-  portCfs.push({ iso: endIso, amount: portEndVal });
-  const portXirrPct = solveXirrPct(portCfs);
-
-  const evalDates = curveBase.map(c => c.iso);
-  const benchResults = {};
-  for (const b of XIRR_BENCH_LIST) {
-    const sim = simulateShadowBenchmark(events, evalDates, endIso, b.key, bh);
-    const bProfit = sim.endVal - netInvestedTwd;
-    const bSimplePct = netInvestedTwd > 0 ? (bProfit / netInvestedTwd) * 100 : 0;
-    benchResults[b.key] = {
-      ...b,
-      endVal: sim.endVal,
-      xirrPct: sim.xirrPct,
-      simplePct: bSimplePct,
-      diffTwd: portEndVal - sim.endVal,
-      alphaPct: (portXirrPct !== null && sim.xirrPct !== null) ? (portXirrPct - sim.xirrPct) : null,
-      valAtIso: sim.valAtIso
-    };
-  }
-
-  return {
-    effectiveScope,
-    startIso,
-    endIso,
-    portEndVal,
-    netInvestedTwd,
-    netProfitTwd,
-    simpleReturnPct,
-    portXirrPct,
-    externalFlowCount,
-    curveBase,
-    benchResults
-  };
-}
-
-function computePerTickerXirr(m) {
-  const bh = m.benchHelper;
-  const todayIso = todayIsoStr();
-  const bySym = new Map();
-
-  const asc = m.allTradeLogs
-    .filter(l => !l.isPendingQty && l.dateIso && l.adjQty > 0)
-    .slice()
-    .sort((a, b) => a.dateSort - b.dateSort || (a.side === "買入" ? -1 : 1) || a.sheetRow - b.sheetRow);
-
-  for (const l of asc) {
-    if (!bySym.has(l.sym)) {
-      bySym.set(l.sym, { sym: l.sym, market: l.market, qty: 0, buyTwd: 0, sellTwd: 0, cfs: [] });
-    }
-    const rec = bySym.get(l.sym);
-    const fx = bh.getFx(l.dateIso);
-    if (l.side === "買入") {
-      rec.qty += l.adjQty;
-      if (!l.kind.includes("股息") && !l.kind.includes("股利")) {
-        const amt = l.market === "台股" ? (l.amtTwd || 0) : ((l.amtUsd || 0) * fx);
-        if (amt > 0) {
-          rec.buyTwd += amt;
-          rec.cfs.push({ iso: l.dateIso, amount: -amt });
-        }
-      }
-    } else if (l.side === "賣出") {
-      const avail = Math.max(0, rec.qty);
-      const matched = Math.min(avail, l.adjQty);
-      rec.qty = Math.max(0, avail - matched);
-      if (matched > 0) {
-        const rawP = l.market === "台股" ? (l.amtTwd || 0) : ((l.amtUsd || 0) * fx);
-        const proc = rawP * (matched / l.adjQty);
-        if (proc > 0) {
-          rec.sellTwd += proc;
-          rec.cfs.push({ iso: l.dateIso, amount: proc });
-        }
-      }
-    }
-  }
-
-  const rows = [];
-  for (const rec of bySym.values()) {
-    if (rec.buyTwd <= 0) continue; // Skip pure pre-sheet liquidation with no recorded buy date
-    let curValTwd = 0;
-    if (rec.qty > 1e-6) {
-      const h = m.tickerMap[rec.sym];
-      if (h && h.marketPrice > 0) {
-        curValTwd = rec.qty * h.marketPrice * (h.isUsdPrice ? m.usdTwd : 1);
-      } else {
-        const bPx = bh.getTwdPrice(rec.sym, todayIso);
-        if (bPx) curValTwd = rec.qty * bPx;
-      }
-    }
-    const cfs = rec.cfs.slice();
-    if (curValTwd > 1) cfs.push({ iso: todayIso, amount: curValTwd });
-    const totalOut = rec.sellTwd + curValTwd;
-    const pnlTwd = totalOut - rec.buyTwd;
-    const roiPct = rec.buyTwd > 0 ? (pnlTwd / rec.buyTwd) * 100 : 0;
-    const firstMs = cfs.length ? (parseDateLoose(cfs[0].iso)?.getTime() || 0) : 0;
-    const lastMs = cfs.length ? (parseDateLoose(cfs[cfs.length - 1].iso)?.getTime() || 0) : 0;
-    const spanDays = firstMs > 0 && lastMs >= firstMs ? Math.max(1, Math.round((lastMs - firstMs) / 86400000)) : 0;
-    const xirr = solveXirrPct(cfs);
-    rows.push({
-      sym: rec.sym,
-      market: rec.market,
-      buyTwd: rec.buyTwd,
-      outTwd: totalOut,
-      pnlTwd,
-      roiPct,
-      spanDays,
-      xirrPct: xirr,
-      sortMetric: spanDays >= 60 && xirr !== null ? xirr : roiPct,
-      isClosed: rec.qty <= 1e-4
-    });
-  }
-
-  rows.sort((a, b) => (b.sortMetric ?? -999) - (a.sortMetric ?? -999));
-  return rows;
-}
-
 function renderXirrChart(res, activeBench) {
   const canvas = document.getElementById("xirrCanvas");
   const box = document.getElementById("xirrChartBox");
@@ -3021,92 +1685,6 @@ function renderXirrPage(m) {
 }
 
 // ==================== PAGE 5: AUTOMATED MONTHLY FINANCIAL REPORT ====================
-function getAvailableReportMonths(m) {
-  const set = new Set();
-  const nowIso = todayIsoStr().slice(0, 7);
-  set.add(nowIso);
-  for (const h of (m.history || [])) {
-    if (h.dateIso) set.add(h.dateIso.slice(0, 7));
-  }
-  for (const l of (m.allTradeLogs || [])) {
-    if (l.dateIso && !l.isPendingDca) set.add(l.dateIso.slice(0, 7));
-  }
-  return Array.from(set).filter(Boolean).sort().reverse();
-}
-
-function computeMonthReportStats(m, ym) {
-  const nowYm = todayIsoStr().slice(0, 7);
-  const isCurrentMonth = ym === nowYm;
-  const monthPts = (m.history || []).filter(p => p.dateIso && p.dateIso.slice(0, 7) === ym);
-  let prevEndPt = null;
-  for (const p of (m.history || [])) {
-    if (p.dateIso && p.dateIso.slice(0, 7) < ym) prevEndPt = p;
-  }
-
-  const startVal = prevEndPt ? prevEndPt.total : (monthPts.length ? monthPts[0].total : m.totalAssets);
-  const endPt = monthPts.length ? monthPts[monthPts.length - 1] : null;
-  const endVal = endPt ? endPt.total : m.totalAssets;
-  const deltaVal = endVal - startVal;
-  const deltaPct = startVal > 0 ? (deltaVal / startVal) * 100 : 0;
-
-  const twVal = endPt ? endPt.tw : m.twTotal;
-  const usVal = endPt ? endPt.us : m.usTotal;
-  const cashVal = endPt ? Math.max(0, endPt.total - endPt.tw - endPt.us) : m.cashTotal;
-
-  let peakUpToYm = endVal;
-  for (const p of (m.history || [])) {
-    if (p.dateIso && p.dateIso.slice(0, 7) <= ym && p.total > peakUpToYm) peakUpToYm = p.total;
-  }
-  const ddPct = peakUpToYm > 0 ? ((endVal - peakUpToYm) / peakUpToYm) * 100 : 0;
-
-  const trades = m.allTradeLogs
-    .filter(l => l.dateIso && l.dateIso.slice(0, 7) === ym && !l.isPendingQty)
-    .slice()
-    .sort((a, b) => a.dateSort - b.dateSort);
-
-  let twBuy = 0, twSell = 0, usBuyUsd = 0, usSellUsd = 0;
-  for (const t of trades) {
-    if (t.market === "台股") {
-      if (t.side === "買入") twBuy += t.amtTwd || 0; else twSell += t.amtTwd || 0;
-    } else {
-      if (t.side === "買入") usBuyUsd += t.amtUsd || 0; else usSellUsd += t.amtUsd || 0;
-    }
-  }
-
-  // Next calendar month string for upcoming RSU vests
-  const [yNum, mNum] = ym.split("-").map(Number);
-  const nextDate = new Date(yNum, mNum, 1);
-  const nextYm = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, "0")}`;
-  const nextMonthVests = (m.rsuVests || []).filter(v => v.dateIso && v.dateIso.slice(0, 7) === nextYm);
-
-  const xirrSnap = computeXirrComparison(m, "HIST_ALL");
-  const b5050 = xirrSnap.benchResults["BLEND_50_50"];
-
-  return {
-    ym,
-    nextYm,
-    isCurrentMonth,
-    recordDays: monthPts.length,
-    startVal,
-    endVal,
-    deltaVal,
-    deltaPct,
-    ddPct,
-    twVal,
-    usVal,
-    cashVal,
-    trades,
-    twBuy,
-    twSell,
-    usBuyUsd,
-    usSellUsd,
-    nextMonthVests,
-    portXirrPct: xirrSnap.portXirrPct,
-    bench5050XirrPct: b5050 ? b5050.xirrPct : null,
-    alpha5050Twd: b5050 ? b5050.diffTwd : 0
-  };
-}
-
 function renderMonthlyReportPage(m) {
   if (!m) return;
   const months = getAvailableReportMonths(m);
@@ -3249,17 +1827,7 @@ function renderMonthlyReportPage(m) {
 }
 
 function buildPlainTextReportSummary(m, ym) {
-  const st = computeMonthReportStats(m, ym);
-  const safeEnd = Math.max(1, st.endVal);
-  const lines = [
-    `📊 【${st.ym} 個人財務與資產配置月報】`,
-    `• 月末總資產：${fmtTwd(st.endVal)}（單月變化 ${fmtTwd(st.deltaVal, true)} / ${fmtPct(st.deltaPct, true)}）`,
-    `• 風險指標：實質槓桿 ${m.effLeverage.toFixed(3)}x ｜ 距高點回撤 ${st.ddPct.toFixed(2)}%`,
-    `• 資產配置：台股 ${((st.twVal / safeEnd) * 100).toFixed(1)}% (${fmtTwd(st.twVal)}) · 美股 ${((st.usVal / safeEnd) * 100).toFixed(1)}% (${fmtTwd(st.usVal)}) · 現金 ${((st.cashVal / safeEnd) * 100).toFixed(1)}% (${fmtTwd(st.cashVal)})`,
-    `• 真實年化 XIRR：${st.portXirrPct !== null ? fmtPct(st.portXirrPct, true) : "—"}（同現金流 50/50 台美大盤：${st.bench5050XirrPct !== null ? fmtPct(st.bench5050XirrPct, true) : "—"}）`,
-    `• 當月交易：共 ${st.trades.length} 筆（台股買 ${fmtTwd(st.twBuy)} / 賣 ${fmtTwd(st.twSell)}；美股買 ${fmtUsd(st.usBuyUsd)} / 賣 ${fmtUsd(st.usSellUsd)}）`
-  ];
-  return lines.join("\n");
+  return buildPlainTextReportText(m, ym, state.hideAmounts);
 }
 
 function renderRsuAndCashflow(m) {
@@ -4349,9 +2917,6 @@ document.querySelectorAll("th[data-sort]").forEach(th => {
 });
 
 // ==================== Rebalance, XIRR & Monthly Report Listeners ====================
-function persistRebTargetsLocal() {
-  try { localStorage.setItem("wealth_rebalance_targets_v1", JSON.stringify(state.rebTargets)); } catch (_) {}
-}
 
 document.getElementById("rebPresetChips").addEventListener("click", (e) => {
   const btn = e.target.closest(".chip");
@@ -4837,7 +3402,7 @@ document.getElementById("clearPwaConnBtn").addEventListener("click", () => {
     return;
   }
   savePwaConfig({ apiUrl: "", apiToken: "" });
-  try { localStorage.removeItem("wealth_pwa_snapshot_v1"); } catch (_) {}
+  clearPwaSnapshotCache();
   setPwaPairError("");
   showToast("已清除此裝置的配對金鑰與本機快取快照");
   if (getRuntimeMode() === "pwa") {

@@ -46,54 +46,28 @@ var SUMMARY_TITLES = /* @__PURE__ */ new Set([
 	"當前總資產",
 	"資產槓桿比"
 ]);
-// src/utils/storage.ts
-function safeStorageGet(store, key, fallback = "") {
-	try {
-		if (!store) return fallback;
-		return store.getItem(key) ?? fallback;
-	} catch {
-		return fallback;
-	}
+// src/utils/dates.ts
+function todayIsoStr(now = /* @__PURE__ */ new Date()) {
+	return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
-function safeStorageJsonGet(store, key, fallback) {
-	try {
-		if (!store) return fallback;
-		const raw = store.getItem(key);
-		return raw ? JSON.parse(raw) : fallback;
-	} catch {
-		return fallback;
-	}
+function parseDateLoose(str) {
+	if (!str) return null;
+	const parts = String(str).trim().replace(/\//g, "-").split("-");
+	if (parts.length < 3) return null;
+	return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
 }
-function safeStorageSet(store, key, val) {
-	try {
-		if (!store) return;
-		store.setItem(key, val);
-	} catch {}
+function toIsoDateStr(d) {
+	if (!d || isNaN(d.getTime())) return "";
+	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
-function escapeHtml(val) {
-	return String(val === null || val === void 0 ? "" : val).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-}
-async function copyTextSafe(text) {
-	if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) try {
-		await navigator.clipboard.writeText(text);
-		return true;
-	} catch {}
-	const ta = document.createElement("textarea");
-	ta.value = text;
-	ta.setAttribute("readonly", "");
-	ta.style.position = "fixed";
-	ta.style.opacity = "0";
-	document.body.appendChild(ta);
-	ta.select();
-	let ok = false;
-	try {
-		ok = Boolean(document.execCommand && document.execCommand("copy"));
-	} catch {
-		ok = false;
-	}
-	ta.remove();
-	if (!ok) throw new Error("瀏覽器限制自動複製，請改用手動全選複製");
-	return true;
+function parseBenchDateIso(raw) {
+	if (!raw) return "";
+	const s = String(raw).trim().split(" ")[0];
+	const mIso = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+	if (mIso) return `${mIso[1]}-${String(Number(mIso[2])).padStart(2, "0")}-${String(Number(mIso[3])).padStart(2, "0")}`;
+	const mDmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+	if (mDmy) return `${mDmy[3]}-${String(Number(mDmy[2])).padStart(2, "0")}-${String(Number(mDmy[1])).padStart(2, "0")}`;
+	return "";
 }
 // src/utils/formatters.ts
 function parseNum(val) {
@@ -123,121 +97,6 @@ function formatQtyValue(n, hideAmounts = false, suffix = "") {
 function formatPctValue(n, signed = false) {
 	if (n === null || n === void 0 || !Number.isFinite(n)) return "—";
 	return (signed && n > 0 ? "+" : "") + n.toFixed(2) + "%";
-}
-// src/utils/dates.ts
-function todayIsoStr(now = /* @__PURE__ */ new Date()) {
-	return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-}
-function parseDateLoose(str) {
-	if (!str) return null;
-	const parts = String(str).trim().replace(/\//g, "-").split("-");
-	if (parts.length < 3) return null;
-	return new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
-}
-function toIsoDateStr(d) {
-	if (!d || isNaN(d.getTime())) return "";
-	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-function parseBenchDateIso(raw) {
-	if (!raw) return "";
-	const s = String(raw).trim().split(" ")[0];
-	const mIso = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
-	if (mIso) return `${mIso[1]}-${String(Number(mIso[2])).padStart(2, "0")}-${String(Number(mIso[3])).padStart(2, "0")}`;
-	const mDmy = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-	if (mDmy) return `${mDmy[3]}-${String(Number(mDmy[2])).padStart(2, "0")}-${String(Number(mDmy[1])).padStart(2, "0")}`;
-	return "";
-}
-// src/core/xirr.ts
-function solveXirrPct(rawCashflows) {
-	const byDay = /* @__PURE__ */ new Map();
-	for (const cf of rawCashflows || []) {
-		if (!cf || !cf.iso || !Number.isFinite(cf.amount) || Math.abs(cf.amount) < 1e-4) continue;
-		byDay.set(cf.iso, (byDay.get(cf.iso) || 0) + cf.amount);
-	}
-	const cfs = Array.from(byDay.entries()).map(([iso, amount]) => ({
-		iso,
-		amount,
-		tMs: parseDateLoose(iso)?.getTime() || 0
-	})).filter((x) => x.tMs > 0 && Math.abs(x.amount) > .01).sort((a, b) => a.tMs - b.tMs);
-	if (cfs.length < 2) return null;
-	const hasNeg = cfs.some((c) => c.amount < 0);
-	const hasPos = cfs.some((c) => c.amount > 0);
-	if (!hasNeg || !hasPos) return null;
-	const t0 = cfs[0].tMs;
-	if ((cfs[cfs.length - 1].tMs - t0) / 864e5 < 1) return null;
-	const npv = (r) => {
-		let sum = 0;
-		const base = 1 + r;
-		if (base <= 0) return Infinity;
-		for (const c of cfs) {
-			const yrs = (c.tMs - t0) / 31536e6;
-			sum += c.amount / Math.pow(base, yrs);
-		}
-		return sum;
-	};
-	let lo = -.95;
-	let hi = 15;
-	let fLo = npv(lo);
-	let fHi = npv(hi);
-	if (!Number.isFinite(fLo) || !Number.isFinite(fHi)) return null;
-	if (fLo * fHi > 0) {
-		lo = -.999999;
-		hi = 50;
-		fLo = npv(lo);
-		fHi = npv(hi);
-		if (!Number.isFinite(fLo) || !Number.isFinite(fHi) || fLo * fHi > 0) return null;
-	}
-	for (let iter = 0; iter < 85; iter++) {
-		const mid = .5 * (lo + hi);
-		const fMid = npv(mid);
-		if (Math.abs(fMid) < 1e-5) return mid * 100;
-		if (fLo * fMid <= 0) {
-			hi = mid;
-			fHi = fMid;
-		} else {
-			lo = mid;
-			fLo = fMid;
-		}
-	}
-	return .5 * (lo + hi) * 100;
-}
-// src/core/cost.ts
-function replayMovingAverageCost(trades, initQty, initAvgCost) {
-	const sorted = (trades || []).slice().sort((a, b) => a.dateSort - b.dateSort || (a.side === "買入" ? -1 : 1) || a.sheetRow - b.sheetRow);
-	let q = Math.max(0, Number(initQty) || 0);
-	let linA = q;
-	let linB = 0;
-	let costPool = q * Math.max(0, Number(initAvgCost) || 0);
-	let realizedPnlNative = 0;
-	let costSoldNative = 0;
-	for (const t of sorted) {
-		if (t.adjQty <= 0) continue;
-		if (t.side === "買入") {
-			q += t.adjQty;
-			linB += t.costNative;
-			costPool += t.costNative;
-		} else if (t.side === "賣出") {
-			const avgBefore = q > 0 ? costPool / q : 0;
-			costSoldNative += avgBefore * t.adjQty;
-			realizedPnlNative += t.proceedsNative - avgBefore * t.adjQty;
-			const nextQ = Math.max(0, q - t.adjQty);
-			const frac = q > 0 ? nextQ / q : 0;
-			linA *= frac;
-			linB *= frac;
-			q = nextQ;
-			costPool = avgBefore * q;
-		}
-	}
-	const finalAvgNative = q > 0 ? costPool / q : initAvgCost > 0 ? initAvgCost : 0;
-	return {
-		finalQty: q,
-		finalCostNative: costPool,
-		finalAvgNative,
-		linA,
-		linB,
-		realizedPnlNative,
-		costSoldNative
-	};
 }
 // src/core/schema.ts
 var SHEET_ROLE_ALIASES = {
@@ -1030,113 +889,79 @@ function parseBenchmarkSeries(sheetsOrRows, usdTwd, allTradeLogs, tickerMap) {
 		getTwdPrice
 	};
 }
-// src/app/legacy-app.js
-var state = {
-	rawSheets: null,
-	overviewFormulas: [],
-	updatedAt: null,
-	writeEnabled: true,
-	lastPairingFailed: false,
-	activePage: "overview",
-	hideAmounts: safeStorageGet(typeof sessionStorage !== "undefined" ? sessionStorage : null, "wealth_hide_amounts") === "1",
-	includeUnvestedRsu: false,
-	pieMode: "holding",
-	activeSliceIndex: null,
-	histDays: 9999,
-	assetTab: "open",
-	catFilter: "ALL",
-	sortKey: "valueTwd",
-	sortDir: "desc",
-	trRange: "6M",
-	trStartDate: "",
-	trEndDate: "",
-	trDatesInitialized: false,
-	trMarket: "ALL",
-	trSide: "ALL",
-	trTicker: "ALL",
-	trKind: "ALL",
-	trIncludePending: true,
-	trSortKey: "date",
-	trSortDir: "desc",
-	tradeSide: "買入",
-	amountManuallyEdited: false,
-	customCosts: safeStorageJsonGet(typeof localStorage !== "undefined" ? localStorage : null, "wealth_custom_costs_v1", {}),
-	rebTargets: Object.assign({
-		twPct: 50,
-		usPct: 40,
-		cashPct: 10,
-		targetLev: 1.15,
-		mode: "inflow",
-		newCashTwd: null
-	}, safeStorageJsonGet(typeof localStorage !== "undefined" ? localStorage : null, "wealth_rebalance_targets_v1", {})),
-	xirrScope: "HIST_ALL",
-	xirrBench: "BLEND_50_50",
-	repSelectedYm: "",
-	repConfig: {
-		email: safeStorageGet(typeof localStorage !== "undefined" ? localStorage : null, "wealth_report_email", ""),
-		triggerEnabled: false
-	},
-	pwaConfig: Object.assign({
-		apiUrl: "",
-		apiToken: ""
-	}, safeStorageJsonGet(typeof localStorage !== "undefined" ? localStorage : null, "wealth_pwa_config_v1", {})),
-	spreadsheetTitle: "財務狀況總整理",
-	spreadsheetUrl: "#",
-	isDemoMode: false,
-	computed: null
-};
-function fmtTwd(n, signed = false) {
-	return formatTwdValue(n, state.hideAmounts, signed);
-}
-function fmtUsd(n, signed = false) {
-	return formatUsdValue(n, state.hideAmounts, signed);
-}
-function fmtQty(n, suffix = "") {
-	return formatQtyValue(n, state.hideAmounts, suffix);
-}
-function fmtPct(n, signed = false) {
-	return formatPctValue(n, signed);
-}
-function showToast(msg) {
-	const el = document.getElementById("toast");
-	el.textContent = msg;
-	el.classList.add("show");
-	clearTimeout(showToast._t);
-	showToast._t = setTimeout(() => el.classList.remove("show"), 3800);
-}
-function computeModel(sheets, ovFormulas = []) {
-	const today = /* @__PURE__ */ new Date();
-	const canonical = adaptSheetsToCanonical(sheets, ovFormulas);
-	let usdTwd = canonical.fxHintFromUs > 0 ? canonical.fxHintFromUs : 32.8591;
-	const overviewRows = canonical.overviewRowsRaw || [];
-	const valColL = canonical.ovColLetters && canonical.ovColLetters.valueTwd || "D";
-	const valRefRe = new RegExp("\\$?" + valColL + "(\\d+)", "gi");
-	const leveragedSheetRows = /* @__PURE__ */ new Set();
-	overviewRows.forEach((row) => {
-		if (row && row.name === "資產槓桿比" && row.levRatioFormula) {
-			const mNum = String(row.levRatioFormula).match(/\(([^)]+)\)\s*\//);
-			if (mNum) (mNum[1].match(valRefRe) || []).slice(2).forEach((ref) => leveragedSheetRows.add(Number(ref.replace(/[^\d]/g, ""))));
-		}
-	});
-	for (const r of overviewRows) if (r && !r.isBlank && r.qty > 0 && r.unitStr.includes("USD") && r.valueTwd > 0) {
-		const px = parseNum(r.unitStr);
-		if (px > 0) {
-			usdTwd = r.valueTwd / (r.qty * px);
-			break;
+// src/core/cost.ts
+function replayMovingAverageCost(trades, initQty, initAvgCost) {
+	const sorted = (trades || []).slice().sort((a, b) => a.dateSort - b.dateSort || (a.side === "買入" ? -1 : 1) || a.sheetRow - b.sheetRow);
+	let q = Math.max(0, Number(initQty) || 0);
+	let linA = q;
+	let linB = 0;
+	let costPool = q * Math.max(0, Number(initAvgCost) || 0);
+	let realizedPnlNative = 0;
+	let costSoldNative = 0;
+	for (const t of sorted) {
+		if (t.adjQty <= 0) continue;
+		if (t.side === "買入") {
+			q += t.adjQty;
+			linB += t.costNative;
+			costPool += t.costNative;
+		} else if (t.side === "賣出") {
+			const avgBefore = q > 0 ? costPool / q : 0;
+			costSoldNative += avgBefore * t.adjQty;
+			realizedPnlNative += t.proceedsNative - avgBefore * t.adjQty;
+			const nextQ = Math.max(0, q - t.adjQty);
+			const frac = q > 0 ? nextQ / q : 0;
+			linA *= frac;
+			linB *= frac;
+			q = nextQ;
+			costPool = avgBefore * q;
 		}
 	}
+	const finalAvgNative = q > 0 ? costPool / q : initAvgCost > 0 ? initAvgCost : 0;
+	return {
+		finalQty: q,
+		finalCostNative: costPool,
+		finalAvgNative,
+		linA,
+		linB,
+		realizedPnlNative,
+		costSoldNative
+	};
+}
+// src/core/model.ts
+function discoverLeveragedRows(canonical) {
+	const valColL = canonical.ovColLetters && canonical.ovColLetters.valueTwd || "D";
+	const valRefRe = new RegExp(`\\$?${valColL}(\\d+)`, "gi");
+	const leveragedSheetRows = /* @__PURE__ */ new Set();
+	for (const row of canonical.overviewRowsRaw || []) if (row && row.name === "資產槓桿比" && row.levRatioFormula) {
+		const mNum = String(row.levRatioFormula).match(/\(([^)]+)\)\s*\//);
+		if (mNum) {
+			const refs = mNum[1].match(valRefRe) || [];
+			for (const ref of refs.slice(2)) leveragedSheetRows.add(Number(ref.replace(/[^\d]/g, "")));
+		}
+	}
+	return leveragedSheetRows;
+}
+function inferLiveUsdTwd(canonical) {
+	const fallback = canonical.fxHintFromUs > 0 ? canonical.fxHintFromUs : 32.8591;
+	for (const r of canonical.overviewRowsRaw || []) if (r && !r.isBlank && r.qty > 0 && r.unitStr.includes("USD") && r.valueTwd > 0) {
+		const px = parseNum(r.unitStr);
+		if (px > 0) return r.valueTwd / (r.qty * px);
+	}
+	return fallback;
+}
+function processTwTrades(twTrades) {
 	const twStats = {};
 	const twTradesBySym = {};
 	const pendingDcaRows = [];
-	const allTradeLogs = [];
-	canonical.twTrades.forEach((t) => {
+	const twLogs = [];
+	for (const t of twTrades) {
 		const { sheetName, sheetRow, dateStr: dtStr, side, kind, sym, amt, rawPxStr, px, rawQty, note } = t;
 		const dObj = parseDateLoose(dtStr);
 		let mult = 1;
 		if (sym === "TPE:0050" && px > 140) mult = 4;
 		if (sym === "TPE:00685L" && px > 50) mult = 24;
 		const adjQty = rawQty > 0 ? rawQty * mult : 0;
-		if (sym) allTradeLogs.push({
+		if (sym) twLogs.push({
 			sheetName: sheetName || "台股交易明細",
 			sheetRow,
 			date: dtStr,
@@ -1164,7 +989,7 @@ function computeModel(sheets, ovFormulas = []) {
 			sym,
 			amount: amt
 		});
-		if (!sym || rawQty <= 0) return;
+		if (!sym || rawQty <= 0) continue;
 		if (!twTradesBySym[sym]) twTradesBySym[sym] = [];
 		twTradesBySym[sym].push({
 			sheetRow,
@@ -1189,15 +1014,24 @@ function computeModel(sheets, ovFormulas = []) {
 			twStats[sym].sellQty += adjQty;
 			twStats[sym].sellProceedsTwd += amt;
 		}
-	});
+	}
+	return {
+		twStats,
+		twTradesBySym,
+		pendingDcaRows,
+		twLogs
+	};
+}
+function processUsTrades(usTrades, usdTwd) {
 	const usStats = {};
 	const usTradesBySym = {};
-	canonical.usTrades.forEach((t) => {
+	const usLogs = [];
+	for (const t of usTrades) {
 		const { sheetName, sheetRow, dateStr: dtStr, side, kind, sym, rawAmtUsd, px, qty, note } = t;
-		if (!sym) return;
+		if (!sym) continue;
 		const dObj = parseDateLoose(dtStr);
 		const computedUsd = px > 0 && qty > 0 ? px * qty : rawAmtUsd > 0 ? rawAmtUsd : null;
-		allTradeLogs.push({
+		usLogs.push({
 			sheetName: sheetName || "美股交易明細",
 			sheetRow,
 			date: dtStr,
@@ -1219,7 +1053,7 @@ function computeModel(sheets, ovFormulas = []) {
 			isPendingDca: false,
 			note: note || ""
 		});
-		if (qty <= 0) return;
+		if (qty <= 0) continue;
 		if (!usTradesBySym[sym]) usTradesBySym[sym] = [];
 		usTradesBySym[sym].push({
 			sheetRow,
@@ -1244,16 +1078,25 @@ function computeModel(sheets, ovFormulas = []) {
 			usStats[sym].sellQty += qty;
 			usStats[sym].sellProceedsUsd += computedUsd || 0;
 		}
-	});
-	allTradeLogs.sort((a, b) => b.dateSort - a.dateSort || b.sheetRow - a.sheetRow);
-	let vestedRsu = 0, unvestedRsu = 0, nextVest = null, rsuTicker = null;
+	}
+	return {
+		usStats,
+		usTradesBySym,
+		usLogs
+	};
+}
+function buildRsuSummary(rsuVestsRaw, today) {
+	let vestedRsu = 0;
+	let unvestedRsu = 0;
+	let nextVest = null;
+	let rsuTicker = null;
 	const rsuByYear = {};
 	const rsuVests = [];
-	for (const r of canonical.rsuVestsRaw || []) {
+	for (const r of rsuVestsRaw) {
 		if (!r.dateStr || r.shares <= 0) continue;
 		const dt = parseDateLoose(r.dateStr);
-		const sh = r.shares;
 		if (!dt) continue;
+		const sh = r.shares;
 		if (r.ticker) rsuTicker = r.ticker;
 		else if (!rsuTicker) rsuTicker = "GOOG";
 		rsuVests.push({
@@ -1281,12 +1124,147 @@ function computeModel(sheets, ovFormulas = []) {
 			};
 		}
 	}
+	return {
+		vestedRsu,
+		unvestedRsu,
+		nextVest,
+		rsuTicker,
+		rsuByYear,
+		rsuVests
+	};
+}
+function buildRealizedRows(twStats, usStats, tickerMap, usdTwd) {
+	const realizedRows = [];
+	for (const [sym, st] of Object.entries(usStats)) {
+		if (st.sellQty <= 0) continue;
+		const avgBuy = st.buyQty > 0 ? st.buyCostUsd / st.buyQty : 0;
+		const avgSell = st.sellProceedsUsd / st.sellQty;
+		const costSold = avgBuy * st.sellQty;
+		const pnlUsd = st.sellProceedsUsd - costSold;
+		const roi = costSold > 0 ? pnlUsd / costSold * 100 : null;
+		realizedRows.push({
+			sym,
+			market: "美股 (USD)",
+			buyQty: st.buyQty,
+			sellQty: st.sellQty,
+			avgBuyStr: `USD $${avgBuy.toFixed(2)}`,
+			avgSellStr: `USD $${avgSell.toFixed(2)}`,
+			pnlUsd,
+			pnlTwd: pnlUsd * usdTwd,
+			proceedsTwd: null,
+			roiPct: roi,
+			status: Math.abs(st.buyQty - st.sellQty) < 1e-6 ? "已全數平倉" : "部分調節"
+		});
+	}
+	for (const [sym, st] of Object.entries(twStats)) {
+		if (st.sellQty <= 0) continue;
+		const hItem = tickerMap[sym];
+		const avgSell = st.sellProceedsTwd / st.sellQty;
+		let avgBuy = st.buyQty > 0 ? st.buyCostTwd / st.buyQty : null;
+		let roi = null;
+		let pnlTwd = null;
+		let status = "部分換股調節";
+		if (hItem && hItem.exactRealizedReplay && hItem.exactRealizedReplay.costSoldNative > 0) {
+			avgBuy = hItem.exactRealizedReplay.costSoldNative / st.sellQty;
+			pnlTwd = hItem.exactRealizedReplay.realizedPnlNative;
+			roi = pnlTwd / hItem.exactRealizedReplay.costSoldNative * 100;
+			status = (hItem.initQtyResolved || 0) > 0 ? "部分調節 (依期初+明細移動平均精算)" : "已依明細移動平均精算";
+		} else if (avgBuy) {
+			pnlTwd = (avgSell - avgBuy) * st.sellQty;
+			roi = (avgSell - avgBuy) / avgBuy * 100;
+			if (st.buyQty < st.sellQty || hItem && hItem.needsInitCost) status = "暫以明細內買價估算 (填寫期初均價後即轉為精算)";
+		} else status = "期初持股平倉 (無期初買價紀錄)";
+		realizedRows.push({
+			sym,
+			market: "台股 (TWD)",
+			buyQty: st.buyQty,
+			sellQty: st.sellQty,
+			avgBuyStr: avgBuy ? `NT$${avgBuy.toFixed(2)}` : "期初部位",
+			avgSellStr: `NT$${avgSell.toFixed(2)}`,
+			pnlUsd: null,
+			pnlTwd,
+			proceedsTwd: st.sellProceedsTwd,
+			roiPct: roi,
+			status
+		});
+	}
+	return realizedRows;
+}
+function buildHistoryPoints(canonical) {
+	const history = [];
+	let skippedNaCount = 0;
+	for (const hr of canonical.historyRowsRaw || []) {
+		if (!hr.isValidLength) continue;
+		if (hr.twCell === "#N/A" || hr.usCell === "#N/A" || hr.totCell === "#N/A") {
+			skippedNaCount++;
+			continue;
+		}
+		const tw = parseNum(hr.twCell);
+		const us = parseNum(hr.usCell);
+		const tot = parseNum(hr.totCell);
+		const dObj = parseDateLoose(hr.dateStr);
+		if (tot > 0 && dObj) history.push({
+			date: hr.dateStr,
+			dateIso: toIsoDateStr(dObj),
+			tw,
+			us,
+			total: tot
+		});
+	}
+	return {
+		history,
+		skippedNaCount
+	};
+}
+function buildCashflowAllocations(canonical) {
+	let netSalary = 0;
+	for (const r of canonical.salaryRowsRaw || []) {
+		const label = String(r[0] || "");
+		if (label.includes("單月總收入") || label.includes("實領") || label.includes("總收入")) {
+			const v = parseNum(r[1]);
+			if (v > 0) netSalary = v;
+		}
+	}
+	const allocations = [];
+	for (const r of canonical.allocRowsRaw || []) {
+		if (!r[0]) continue;
+		if (String(r[0]).includes("可分配總收入")) {
+			if (netSalary <= 0) netSalary = parseNum(r[1]);
+			continue;
+		}
+		const amt = parseNum(r[1]);
+		if (amt > 0) allocations.push({
+			name: r[0],
+			amount: amt,
+			note: r[2] || ""
+		});
+	}
+	if (netSalary <= 0 && allocations.length > 0) netSalary = allocations.reduce((s, a) => s + a.amount, 0);
+	return {
+		netSalary,
+		allocations
+	};
+}
+/**
+* Computes the complete portfolio valuation, cost basis, cashflow, and benchmark model
+* from raw Google Sheet arrays without reading DOM or global UI state.
+*/
+function computeModel$1(sheets, ovFormulas = [], options = {}) {
+	const today = options.today || /* @__PURE__ */ new Date();
+	const customCosts = options.customCosts || {};
+	const includeUnvestedRsu = Boolean(options.includeUnvestedRsu);
+	const canonical = adaptSheetsToCanonical(sheets, ovFormulas);
+	const usdTwd = inferLiveUsdTwd(canonical);
+	const leveragedSheetRows = discoverLeveragedRows(canonical);
+	const { twStats, twTradesBySym, pendingDcaRows, twLogs } = processTwTrades(canonical.twTrades);
+	const { usStats, usTradesBySym, usLogs } = processUsTrades(canonical.usTrades, usdTwd);
+	const allTradeLogs = [...twLogs, ...usLogs].sort((a, b) => b.dateSort - a.dateSort || b.sheetRow - a.sheetRow);
+	const { vestedRsu, unvestedRsu, nextVest, rsuTicker, rsuByYear, rsuVests } = buildRsuSummary(canonical.rsuVestsRaw || [], today);
 	const holdings = [];
 	const tickerMap = {};
 	let leverageRatio = 1;
 	let rsuStockPriceUsd = 0;
-	for (let i = 0; i < overviewRows.length; i++) {
-		const row = overviewRows[i];
+	for (const row of canonical.overviewRowsRaw || []) {
 		const sheetRowNum = row.sheetRowNum;
 		if (row.isBlank) {
 			if (holdings.length > 0) break;
@@ -1305,8 +1283,8 @@ function computeModel(sheets, ovFormulas = []) {
 		let strategy = "現金與外幣預備金";
 		if (category !== "現金") {
 			if (isLev2x) strategy = "2倍槓桿 ETF";
-			else if (ticker === rsuTicker || !hasSumifs && !(category === "美股" && usStats[ticker]) && !(category === "台股" && twStats[ticker])) strategy = "核心個股與 RSU";
-			else if ([
+			else if (ticker === rsuTicker || !hasSumifs && !(category === "美股" && ticker && usStats[ticker]) && !(category === "台股" && ticker && twStats[ticker])) strategy = "核心個股與 RSU";
+			else if (ticker && [
 				"TPE:2330",
 				"GOOG",
 				"TSLA",
@@ -1316,31 +1294,41 @@ function computeModel(sheets, ovFormulas = []) {
 			].includes(ticker)) strategy = "核心個股與 RSU";
 			else strategy = "市值型原型 ETF";
 		}
-		if (ticker === rsuTicker && marketPrice > 0) rsuStockPriceUsd = marketPrice;
+		if (ticker && ticker === rsuTicker && marketPrice > 0) rsuStockPriceUsd = marketPrice;
 		const rawSheetInitQty = row.rawInitQty;
 		const rawSheetInitCost = row.rawInitCost;
 		const sheetInitQty = rawSheetInitQty !== "" ? parseNum(rawSheetInitQty) : null;
 		const sheetInitCost = rawSheetInitCost !== "" ? parseNum(rawSheetInitCost) : 0;
-		let avgCostNative = null, costTwd = null, pnlTwd = null, roiPct = null;
-		let costNote = "", needsInitCost = false;
-		let initQtyResolved = 0, initAvgCostResolved = sheetInitCost;
-		let loggedBuyQty = 0, loggedSellQty = 0, loggedBuyAvg = null;
-		let linA = 0, linB = 0, replayFinalQty = qty;
+		let avgCostNative = null;
+		let costTwd = null;
+		let pnlTwd = null;
+		let roiPct = null;
+		let costNote = "";
+		let needsInitCost = false;
+		let initQtyResolved = 0;
+		let initAvgCostResolved = sheetInitCost;
+		let loggedBuyQty = 0;
+		let loggedSellQty = 0;
+		let loggedBuyAvg = null;
+		let linA = 0;
+		let linB = 0;
+		let replayFinalQty = qty;
 		let exactRealizedReplay = null;
 		if (category === "現金") costNote = note ? `備註：${note}` : "現金存款部位";
 		else if ((category === "台股" || category === "美股") && ticker) {
 			const isTw = category === "台股";
-			const st = isTw ? twStats[ticker] : usStats[ticker];
+			const twSt = isTw ? twStats[ticker] : void 0;
+			const usSt = !isTw ? usStats[ticker] : void 0;
 			const symTrades = isTw ? twTradesBySym[ticker] || [] : usTradesBySym[ticker] || [];
-			loggedBuyQty = st ? st.buyQty : 0;
-			loggedSellQty = st ? st.sellQty : 0;
-			const loggedBuyCostNative = st ? isTw ? st.buyCostTwd : st.buyCostUsd : 0;
+			loggedBuyQty = isTw ? twSt ? twSt.buyQty : 0 : usSt ? usSt.buyQty : 0;
+			loggedSellQty = isTw ? twSt ? twSt.sellQty : 0 : usSt ? usSt.sellQty : 0;
+			const loggedBuyCostNative = isTw ? twSt ? twSt.buyCostTwd : 0 : usSt ? usSt.buyCostUsd : 0;
 			loggedBuyAvg = loggedBuyQty > 0 ? loggedBuyCostNative / loggedBuyQty : null;
 			const netLogged = loggedBuyQty - loggedSellQty;
 			const impliedUnrecordedQty = Math.max(0, +(qty - netLogged).toFixed(6));
 			initQtyResolved = sheetInitQty !== null ? sheetInitQty : impliedUnrecordedQty;
 			const legacyKey = ticker === "TPE:0050" ? "0050_avg_twd" : ticker === "TPE:2330" ? "2330_avg_twd" : ticker === "GOOG" ? "goog_grant_usd" : `cost_${ticker}`;
-			if (initAvgCostResolved <= 0 && parseNum(state.customCosts[legacyKey]) > 0) initAvgCostResolved = parseNum(state.customCosts[legacyKey]);
+			if (initAvgCostResolved <= 0 && parseNum(customCosts[legacyKey]) > 0) initAvgCostResolved = parseNum(customCosts[legacyKey]);
 			const fxMult = isUsdPrice ? usdTwd : 1;
 			if (initQtyResolved <= (isTw ? 1 : .05) && loggedBuyQty > 0) {
 				const rep = replayMovingAverageCost(symTrades, 0, 0);
@@ -1352,7 +1340,7 @@ function computeModel(sheets, ovFormulas = []) {
 				costTwd = avgCostNative * qty * fxMult;
 				pnlTwd = valueTwd - costTwd;
 				roiPct = avgCostNative > 0 ? (marketPrice - avgCostNative) / avgCostNative * 100 : null;
-				costNote = !isTw && st?.divQty > 0 ? "美股明細自動回算 (含股利配股)" : `${category}明細自動回算 (100% 紀錄完整)`;
+				costNote = !isTw && usSt && usSt.divQty > 0 ? "美股明細自動回算 (含股利配股)" : `${category}明細自動回算 (100% 紀錄完整)`;
 			} else {
 				const rep = replayMovingAverageCost(symTrades, initQtyResolved, initAvgCostResolved);
 				linA = rep.linA;
@@ -1398,7 +1386,7 @@ function computeModel(sheets, ovFormulas = []) {
 			roiPct,
 			costNote,
 			needsInitCost,
-			isRsu: ticker === rsuTicker,
+			isRsu: Boolean(ticker && ticker === rsuTicker),
 			sheetInitQty,
 			sheetInitCost,
 			initQtyResolved,
@@ -1414,9 +1402,9 @@ function computeModel(sheets, ovFormulas = []) {
 		holdings.push(item);
 		if (ticker) tickerMap[ticker] = item;
 	}
-	for (const r of overviewRows) if (r && r.name === "資產槓桿比") leverageRatio = r.qty || leverageRatio;
+	for (const r of canonical.overviewRowsRaw || []) if (r && r.name === "資產槓桿比") leverageRatio = r.qty || leverageRatio;
 	const unvestedValueTwd = Math.round(unvestedRsu * rsuStockPriceUsd * usdTwd);
-	if (state.includeUnvestedRsu && unvestedRsu > 0) holdings.push({
+	if (includeUnvestedRsu && unvestedRsu > 0) holdings.push({
 		key: "GOOG_UNVESTED",
 		name: `${rsuTicker} 未歸屬 RSU (至2030)`,
 		ticker: null,
@@ -1449,100 +1437,9 @@ function computeModel(sheets, ovFormulas = []) {
 	const effLeverage = totalAssets > 0 ? totalExposure / totalAssets : leverageRatio;
 	const twKnownTickers = Array.from(/* @__PURE__ */ new Set([...holdings.filter((h) => h.category === "台股" && h.ticker).map((h) => h.ticker), ...Object.keys(twStats)]));
 	const usKnownTickers = Array.from(/* @__PURE__ */ new Set([...holdings.filter((h) => h.category === "美股" && h.ticker && h.ticker !== rsuTicker).map((h) => h.ticker), ...Object.keys(usStats)]));
-	const realizedRows = [];
-	for (const [sym, st] of Object.entries(usStats)) if (st.sellQty > 0) {
-		const avgBuy = st.buyQty > 0 ? st.buyCostUsd / st.buyQty : 0;
-		const avgSell = st.sellProceedsUsd / st.sellQty;
-		const costSold = avgBuy * st.sellQty;
-		const pnlUsd = st.sellProceedsUsd - costSold;
-		const roi = costSold > 0 ? pnlUsd / costSold * 100 : null;
-		realizedRows.push({
-			sym,
-			market: "美股 (USD)",
-			buyQty: st.buyQty,
-			sellQty: st.sellQty,
-			avgBuyStr: `USD $${avgBuy.toFixed(2)}`,
-			avgSellStr: `USD $${avgSell.toFixed(2)}`,
-			pnlUsd,
-			pnlTwd: pnlUsd * usdTwd,
-			proceedsTwd: null,
-			roiPct: roi,
-			status: Math.abs(st.buyQty - st.sellQty) < 1e-6 ? "已全數平倉" : "部分調節"
-		});
-	}
-	for (const [sym, st] of Object.entries(twStats)) if (st.sellQty > 0) {
-		const hItem = tickerMap[sym];
-		const avgSell = st.sellProceedsTwd / st.sellQty;
-		let avgBuy = st.buyQty > 0 ? st.buyCostTwd / st.buyQty : null;
-		let roi = null, pnlTwd = null;
-		let status = "部分換股調節";
-		if (hItem && hItem.exactRealizedReplay && hItem.exactRealizedReplay.costSoldNative > 0) {
-			avgBuy = hItem.exactRealizedReplay.costSoldNative / st.sellQty;
-			pnlTwd = hItem.exactRealizedReplay.realizedPnlNative;
-			roi = pnlTwd / hItem.exactRealizedReplay.costSoldNative * 100;
-			status = hItem.initQtyResolved > 0 ? "部分調節 (依期初+明細移動平均精算)" : "已依明細移動平均精算";
-		} else if (avgBuy) {
-			pnlTwd = (avgSell - avgBuy) * st.sellQty;
-			roi = (avgSell - avgBuy) / avgBuy * 100;
-			if (st.buyQty < st.sellQty || hItem && hItem.needsInitCost) status = "暫以明細內買價估算 (填寫期初均價後即轉為精算)";
-		} else status = "期初持股平倉 (無期初買價紀錄)";
-		realizedRows.push({
-			sym,
-			market: "台股 (TWD)",
-			buyQty: st.buyQty,
-			sellQty: st.sellQty,
-			avgBuyStr: avgBuy ? `NT$${avgBuy.toFixed(2)}` : "期初部位",
-			avgSellStr: `NT$${avgSell.toFixed(2)}`,
-			pnlUsd: null,
-			pnlTwd,
-			proceedsTwd: st.sellProceedsTwd,
-			roiPct: roi,
-			status
-		});
-	}
-	const history = [];
-	let skippedNaCount = 0;
-	for (const hr of canonical.historyRowsRaw || []) {
-		if (!hr.isValidLength) continue;
-		if (hr.twCell === "#N/A" || hr.usCell === "#N/A" || hr.totCell === "#N/A") {
-			skippedNaCount++;
-			continue;
-		}
-		const tw = parseNum(hr.twCell), us = parseNum(hr.usCell), tot = parseNum(hr.totCell);
-		const dObj = parseDateLoose(hr.dateStr);
-		if (tot > 0 && dObj) history.push({
-			date: hr.dateStr,
-			dateIso: toIsoDateStr(dObj),
-			tw,
-			us,
-			total: tot
-		});
-	}
-	const salaryRows = canonical.salaryRowsRaw || [];
-	const allocRows = canonical.allocRowsRaw || [];
-	let netSalary = 0;
-	for (const r of salaryRows) {
-		const label = String(r[0] || "");
-		if (label.includes("單月總收入") || label.includes("實領") || label.includes("總收入")) {
-			const v = parseNum(r[1]);
-			if (v > 0) netSalary = v;
-		}
-	}
-	const allocations = [];
-	for (const r of allocRows) {
-		if (!r[0]) continue;
-		if (String(r[0]).includes("可分配總收入")) {
-			if (netSalary <= 0) netSalary = parseNum(r[1]);
-			continue;
-		}
-		const amt = parseNum(r[1]);
-		if (amt > 0) allocations.push({
-			name: r[0],
-			amount: amt,
-			note: r[2] || ""
-		});
-	}
-	if (netSalary <= 0 && allocations.length > 0) netSalary = allocations.reduce((s, a) => s + a.amount, 0);
+	const realizedRows = buildRealizedRows(twStats, usStats, tickerMap, usdTwd);
+	const { history, skippedNaCount } = buildHistoryPoints(canonical);
+	const { netSalary, allocations } = buildCashflowAllocations(canonical);
 	const benchHelper = parseBenchmarkSeries(canonical.benchRows, usdTwd, allTradeLogs, tickerMap);
 	return {
 		usdTwd,
@@ -1584,98 +1481,653 @@ function computeModel(sheets, ovFormulas = []) {
 		benchHelper
 	};
 }
-function getRuntimeMode() {
-	if (window.google && google.script && google.script.run) return "gas";
-	const forcePwa = typeof location !== "undefined" && new URLSearchParams(location.search).get("pwa") === "1";
-	const host = typeof location !== "undefined" && location.hostname ? location.hostname : "";
-	if (!forcePwa && (host === "127.0.0.1" || host === "localhost")) return "localhost";
-	return "pwa";
+// src/core/rebalance.ts
+var REBALANCE_CATEGORIES = [
+	"台股",
+	"美股",
+	"現金"
+];
+function getDefaultMonthlyInvestTwd(m) {
+	if (!m || !m.allocations) return 5e4;
+	const inv = m.allocations.filter((a) => String(a.name).includes("投資")).reduce((s, a) => s + a.amount, 0);
+	if (inv > 0) return Math.round(inv);
+	const surplus = m.allocations.filter((a) => String(a.name).includes("結餘")).reduce((s, a) => s + a.amount, 0);
+	return surplus > 0 ? Math.round(surplus) : 5e4;
 }
-function hasPwaCloudBridge() {
-	return Boolean(state.pwaConfig && state.pwaConfig.apiUrl && state.pwaConfig.apiToken);
-}
-function isCloudCapable() {
-	return getRuntimeMode() === "gas" || hasPwaCloudBridge();
-}
-function validateAppsScriptExecUrl(rawUrl, sourceLabel) {
-	const apiUrl = String(rawUrl || "").trim();
-	const label = sourceLabel || "設定中";
-	if (!apiUrl.startsWith("https://script.google.com/")) throw new Error(`${label}的 Apps Script 網址無效（需為 https://script.google.com/.../exec）`);
-	if (/\/dev(?:$|\?)/.test(apiUrl)) throw new Error(`${label}的網址結尾是 /dev（測試網址，外部手機無法連線）！請到 Apps Script「部署 → 管理部署作業」複製結尾為 /exec 的正式網址重新產生配對碼`);
-	if (!/\/exec(?:$|\?)/.test(apiUrl)) throw new Error(`${label}的網址必須以 /exec 結尾（不可貼編輯頁網址），請從「部署 → 管理部署作業」複製網頁應用程式網址`);
-	return apiUrl;
-}
-function parsePairingCode(rawStr) {
-	let s = String(rawStr || "").trim();
-	if (!s) throw new Error("請貼上配對碼");
-	const prefixIdx = s.indexOf("WDB1:");
-	if (prefixIdx >= 0) s = s.slice(prefixIdx + 5);
-	s = s.replace(/\s+/g, "").replace(/^["'`]+|["'`]+$/g, "");
-	let decoded;
-	try {
-		const jsonStr = decodeURIComponent(escape(atob(s)));
-		decoded = JSON.parse(jsonStr);
-	} catch (_) {
-		throw new Error("配對碼格式不正確，請重新從 Google Sheet 選單複製 WDB1:... 配對碼");
-	}
-	const apiUrl = validateAppsScriptExecUrl(decoded && decoded.u, "配對碼內");
-	const apiToken = String(decoded && decoded.t || "").trim();
-	if (apiToken.length < 16) throw new Error("配對碼內的加密金鑰無效");
-	return {
-		apiUrl,
-		apiToken
+/**
+* Computes normalized target weights, category allocation deltas, and per-holding
+* execution suggestions for either inflow-only or full buy/sell rebalancing.
+*/
+function computeRebalancePlan(m, targets, todayIso = todayIsoStr()) {
+	const twPct = Number(targets.twPct) || 0;
+	const usPct = Number(targets.usPct) || 0;
+	const cashPct = Number(targets.cashPct) || 0;
+	const rawSumPct = twPct + usPct + cashPct;
+	const isSumOk = Math.abs(rawSumPct - 100) < .15;
+	const safeSum = rawSumPct > 0 ? rawSumPct : 100;
+	const weightsPct = {
+		"台股": twPct / safeSum * 100,
+		"美股": usPct / safeSum * 100,
+		"現金": cashPct / safeSum * 100
 	};
-}
-function encodePairingCode(apiUrl, apiToken) {
-	const cleanUrl = validateAppsScriptExecUrl(apiUrl, "目前設定中");
-	const cleanToken = String(apiToken || "").trim();
-	if (cleanToken.length < 16) throw new Error("目前沒有有效的 256-bit 加密連線金鑰");
-	const raw = JSON.stringify({
-		u: cleanUrl,
-		t: cleanToken
-	});
-	return "WDB1:" + btoa(unescape(encodeURIComponent(raw)));
-}
-function savePwaConfig(cfg) {
-	state.pwaConfig = {
-		apiUrl: String(cfg && cfg.apiUrl || "").trim(),
-		apiToken: String(cfg && cfg.apiToken || "").trim()
+	const curVal = {
+		"台股": m.twTotal,
+		"美股": m.usTotal,
+		"現金": m.cashTotal
 	};
-	try {
-		localStorage.setItem("wealth_pwa_config_v1", JSON.stringify(state.pwaConfig));
-	} catch (_) {}
-	updatePwaModalUi();
-}
-function saveSnapshotCache(res) {
-	if (!res || !res.sheets) return;
-	try {
-		const snap = {
-			spreadsheetTitle: res.spreadsheetTitle || state.spreadsheetTitle,
-			spreadsheetUrl: res.spreadsheetUrl || state.spreadsheetUrl,
-			updatedAt: res.updatedAt || (/* @__PURE__ */ new Date()).toISOString(),
-			customCosts: res.customCosts || state.customCosts,
-			rebalanceTargets: res.rebalanceTargets || state.rebTargets,
-			monthlyReportConfig: res.monthlyReportConfig || state.repConfig,
-			overviewFormulas: res.overviewFormulas || state.overviewFormulas || [],
-			sheets: res.sheets
+	const totCurTwd = Math.max(1, m.totalAssets);
+	const inflowAmtTwd = targets.mode === "inflow" ? Math.max(0, Number(targets.newCashTwd) || 0) : 0;
+	const postTotalTwd = totCurTwd + inflowAmtTwd;
+	const catDelta = {
+		"台股": 0,
+		"美股": 0,
+		"現金": 0
+	};
+	if (targets.mode === "inflow") {
+		const posGaps = {
+			"台股": 0,
+			"美股": 0,
+			"現金": 0
 		};
-		localStorage.setItem("wealth_pwa_snapshot_v1", JSON.stringify(snap));
-	} catch (_) {}
-}
-function loadSnapshotCache() {
-	try {
-		const raw = localStorage.getItem("wealth_pwa_snapshot_v1");
-		if (!raw) return null;
-		const parsed = JSON.parse(raw);
-		return parsed && parsed.sheets ? parsed : null;
-	} catch (_) {
-		return null;
+		let gapSum = 0;
+		for (const c of REBALANCE_CATEGORIES) {
+			const idealVal = weightsPct[c] / 100 * postTotalTwd;
+			const g = Math.max(0, idealVal - curVal[c]);
+			posGaps[c] = g;
+			gapSum += g;
+		}
+		for (const c of REBALANCE_CATEGORIES) catDelta[c] = gapSum > 0 ? inflowAmtTwd * (posGaps[c] / gapSum) : inflowAmtTwd * (weightsPct[c] / 100);
+	} else for (const c of REBALANCE_CATEGORIES) catDelta[c] = weightsPct[c] / 100 * totCurTwd - curVal[c];
+	const categories = {};
+	for (const cat of REBALANCE_CATEGORIES) {
+		const currentPct = curVal[cat] / totCurTwd * 100;
+		const targetPct = weightsPct[cat];
+		const idealValTwd = targetPct / 100 * postTotalTwd;
+		const deltaTwd = catDelta[cat];
+		categories[cat] = {
+			category: cat,
+			currentValTwd: curVal[cat],
+			currentPct,
+			targetPct,
+			driftPct: currentPct - targetPct,
+			idealValTwd,
+			deltaTwd,
+			afterPct: (curVal[cat] + deltaTwd) / postTotalTwd * 100
+		};
 	}
+	const orderRows = [];
+	for (const cat of REBALANCE_CATEGORIES) {
+		const dCat = catDelta[cat];
+		const candidates = m.holdings.filter((h) => h.category === cat && !h.isRsu && h.key !== "GOOG_UNVESTED");
+		if (candidates.length === 0) {
+			if (Math.abs(dCat) >= 500) {
+				const fallbackTicker = cat === "台股" ? "TPE:0050" : cat === "美股" ? "VT" : null;
+				const refPx = fallbackTicker ? m.benchHelper.getTwdPrice(fallbackTicker, todayIso) || 0 : 0;
+				orderRows.push({
+					name: fallbackTicker ? `${fallbackTicker} (代表標的)` : `${cat}帳戶`,
+					ticker: fallbackTicker,
+					category: cat,
+					curValTwd: 0,
+					deltaTwd: dCat,
+					isUsd: cat === "美股",
+					marketPrice: cat === "美股" && refPx > 0 ? refPx / m.usdTwd : refPx,
+					afterValTwd: Math.max(0, dCat)
+				});
+			}
+			continue;
+		}
+		const catSubTotal = candidates.reduce((s, h) => s + h.valueTwd, 0);
+		for (const h of candidates) {
+			const itemDelta = dCat * (catSubTotal > 0 ? h.valueTwd / catSubTotal : 1 / candidates.length);
+			orderRows.push({
+				name: h.name,
+				ticker: h.ticker,
+				category: cat,
+				curValTwd: h.valueTwd,
+				deltaTwd: itemDelta,
+				isUsd: h.isUsdPrice,
+				marketPrice: h.marketPrice,
+				afterValTwd: Math.max(0, h.valueTwd + itemDelta)
+			});
+		}
+	}
+	orderRows.sort((a, b) => Math.abs(b.deltaTwd) - Math.abs(a.deltaTwd));
+	return {
+		rawSumPct,
+		isSumOk,
+		weightsPct,
+		inflowAmtTwd,
+		totCurTwd,
+		postTotalTwd,
+		catDelta,
+		categories,
+		orderRows
+	};
 }
-function buildDemoDashboardPayload() {
-	const today = /* @__PURE__ */ new Date();
-	const isoToday = `${today.getFullYear()}/${today.getMonth() + 1}/${today.getDate()}`;
-	const yr = today.getFullYear();
+/**
+* Computes cash-neutral 1x/2x ETF swap plans to shift effective portfolio leverage.
+*/
+function computeLeveragePlan(m, rawTargetLev, todayIso = todayIsoStr()) {
+	const targetLev = Number(rawTargetLev) || Number(m.effLeverage.toFixed(2)) || 1.15;
+	const targetExposureTwd = targetLev * m.totalAssets;
+	const deltaExposureTwd = targetExposureTwd - m.totalExposure;
+	const tw1x = m.holdings.find((h) => h.category === "台股" && !h.isLev2x && h.ticker) || m.tickerMap["TPE:0050"];
+	const tw2x = m.holdings.find((h) => h.category === "台股" && h.isLev2x && h.ticker) || m.tickerMap["TPE:00685L"];
+	const us1x = m.holdings.find((h) => h.category === "美股" && !h.isLev2x && !h.isRsu && h.ticker) || m.tickerMap["QQQ"] || m.tickerMap["VT"];
+	const us2x = m.holdings.find((h) => h.category === "美股" && h.isLev2x && h.ticker) || m.tickerMap["QLD"];
+	const absSwapTwd = Math.abs(deltaExposureTwd);
+	const cur2xTotalTwd = m.holdings.filter((h) => h.isLev2x).reduce((s, h) => s + h.valueTwd, 0);
+	return {
+		targetLev,
+		targetExposureTwd,
+		deltaExposureTwd,
+		isBalanced: Math.abs(deltaExposureTwd) < 5e3,
+		isIncrease: deltaExposureTwd > 0,
+		absSwapTwd,
+		swapUsd: m.usdTwd > 0 ? absSwapTwd / m.usdTwd : 0,
+		tw1Sym: tw1x ? tw1x.ticker || tw1x.name : "TPE:0050",
+		tw2Sym: tw2x ? tw2x.ticker || tw2x.name : "TPE:00685L",
+		tw1Px: tw1x && tw1x.marketPrice > 0 ? tw1x.marketPrice : m.benchHelper.getTwdPrice("TPE:0050", todayIso) || 0,
+		tw2Px: tw2x && tw2x.marketPrice > 0 ? tw2x.marketPrice : 0,
+		us1Sym: us1x ? us1x.ticker || us1x.name : "QQQ",
+		us2Sym: us2x ? us2x.ticker || us2x.name : "QLD",
+		us1Px: us1x && us1x.marketPrice > 0 ? us1x.marketPrice : 0,
+		us2Px: us2x && us2x.marketPrice > 0 ? us2x.marketPrice : 0,
+		cur2xTotalTwd,
+		minStockLev: m.totalAssets > 0 ? (m.twTotal + m.usTotal) / m.totalAssets : 1
+	};
+}
+// src/core/xirr.ts
+function solveXirrPct(rawCashflows) {
+	const byDay = /* @__PURE__ */ new Map();
+	for (const cf of rawCashflows || []) {
+		if (!cf || !cf.iso || !Number.isFinite(cf.amount) || Math.abs(cf.amount) < 1e-4) continue;
+		byDay.set(cf.iso, (byDay.get(cf.iso) || 0) + cf.amount);
+	}
+	const cfs = Array.from(byDay.entries()).map(([iso, amount]) => ({
+		iso,
+		amount,
+		tMs: parseDateLoose(iso)?.getTime() || 0
+	})).filter((x) => x.tMs > 0 && Math.abs(x.amount) > .01).sort((a, b) => a.tMs - b.tMs);
+	if (cfs.length < 2) return null;
+	const hasNeg = cfs.some((c) => c.amount < 0);
+	const hasPos = cfs.some((c) => c.amount > 0);
+	if (!hasNeg || !hasPos) return null;
+	const t0 = cfs[0].tMs;
+	if ((cfs[cfs.length - 1].tMs - t0) / 864e5 < 1) return null;
+	const npv = (r) => {
+		let sum = 0;
+		const base = 1 + r;
+		if (base <= 0) return Infinity;
+		for (const c of cfs) {
+			const yrs = (c.tMs - t0) / 31536e6;
+			sum += c.amount / Math.pow(base, yrs);
+		}
+		return sum;
+	};
+	let lo = -.95;
+	let hi = 15;
+	let fLo = npv(lo);
+	let fHi = npv(hi);
+	if (!Number.isFinite(fLo) || !Number.isFinite(fHi)) return null;
+	if (fLo * fHi > 0) {
+		lo = -.999999;
+		hi = 50;
+		fLo = npv(lo);
+		fHi = npv(hi);
+		if (!Number.isFinite(fLo) || !Number.isFinite(fHi) || fLo * fHi > 0) return null;
+	}
+	for (let iter = 0; iter < 85; iter++) {
+		const mid = .5 * (lo + hi);
+		const fMid = npv(mid);
+		if (Math.abs(fMid) < 1e-5) return mid * 100;
+		if (fLo * fMid <= 0) {
+			hi = mid;
+			fHi = fMid;
+		} else {
+			lo = mid;
+			fLo = fMid;
+		}
+	}
+	return .5 * (lo + hi) * 100;
+}
+// src/core/xirr-analysis.ts
+var XIRR_BENCH_LIST = [
+	{
+		key: "BLEND_50_50",
+		label: "50% 0050 + 50% VT (台美均衡)",
+		short: "50/50 台美均衡"
+	},
+	{
+		key: "TPE:0050",
+		label: "0050 (元大台灣50)",
+		short: "0050 (台灣50)"
+	},
+	{
+		key: "VT",
+		label: "VT (全球股市 ETF)",
+		short: "VT (全球股市)"
+	},
+	{
+		key: "VOO",
+		label: "VOO (標普500 ETF)",
+		short: "VOO (標普500)"
+	},
+	{
+		key: "QQQ",
+		label: "QQQ (納指100 ETF)",
+		short: "QQQ (納指100)"
+	}
+];
+/**
+* Simulates investing identical cashflows into a benchmark index or 50/50 blend.
+*/
+function simulateShadowBenchmark(events, evalDatesIso, endIso, benchKey, bh) {
+	const evByDay = /* @__PURE__ */ new Map();
+	for (const e of events) {
+		if (!e.iso || !Number.isFinite(e.investTwd)) continue;
+		evByDay.set(e.iso, (evByDay.get(e.iso) || 0) + e.investTwd);
+	}
+	const allIsoSet = /* @__PURE__ */ new Set([
+		...evByDay.keys(),
+		...evalDatesIso,
+		endIso
+	]);
+	const timeline = Array.from(allIsoSet).filter((d) => d && d <= endIso).sort();
+	let shSingle = 0;
+	let sh50 = 0;
+	let shVT = 0;
+	const valAtIso = /* @__PURE__ */ new Map();
+	for (const dIso of timeline) {
+		const flow = evByDay.get(dIso) || 0;
+		if (benchKey === "BLEND_50_50") {
+			const px50 = bh.getTwdPrice("TPE:0050", dIso) || 100;
+			const pxVT = bh.getTwdPrice("VT", dIso) || 4e3;
+			if (flow > 0) {
+				sh50 += .5 * flow / px50;
+				shVT += .5 * flow / pxVT;
+			} else if (flow < 0) {
+				const wAmt = -flow;
+				const v50 = sh50 * px50;
+				const vVT = shVT * pxVT;
+				const vTot = v50 + vVT;
+				if (vTot > .001) {
+					sh50 -= wAmt * (v50 / vTot) / px50;
+					shVT -= wAmt * (vVT / vTot) / pxVT;
+				} else {
+					sh50 -= .5 * wAmt / px50;
+					shVT -= .5 * wAmt / pxVT;
+				}
+			}
+			valAtIso.set(dIso, sh50 * px50 + shVT * pxVT);
+		} else {
+			const px = bh.getTwdPrice(benchKey, dIso) || 100;
+			if (flow !== 0) shSingle += flow / px;
+			valAtIso.set(dIso, shSingle * px);
+		}
+	}
+	const endVal = valAtIso.get(endIso) || 0;
+	const benchCfs = events.map((e) => ({
+		iso: e.iso,
+		amount: -e.investTwd
+	}));
+	benchCfs.push({
+		iso: endIso,
+		amount: endVal
+	});
+	return {
+		endVal,
+		xirrPct: solveXirrPct(benchCfs),
+		valAtIso
+	};
+}
+/**
+* Compares portfolio money-weighted XIRR against shadow benchmarks over the chosen scope.
+*/
+function computeXirrComparison(m, scope, todayIso = todayIsoStr()) {
+	const bh = m.benchHelper;
+	let effectiveScope = scope;
+	if (effectiveScope.startsWith("HIST_") && (!m.history || m.history.length < 2)) effectiveScope = "TRADES_ALL";
+	const events = [];
+	let curveBase = [];
+	let startIso = "";
+	let endIso = "";
+	let portEndVal = 0;
+	let externalFlowCount = 0;
+	if (effectiveScope.startsWith("HIST_")) {
+		const nDays = {
+			HIST_ALL: 99999,
+			HIST_180: 180,
+			HIST_90: 90,
+			HIST_30: 30
+		}[effectiveScope] || 99999;
+		const pts = nDays >= 99999 ? m.history : m.history.slice(-Math.min(m.history.length, nDays));
+		const first = pts[0];
+		const last = pts[pts.length - 1];
+		startIso = first.dateIso;
+		endIso = last.dateIso;
+		const initStockVal = first.tw + first.us;
+		portEndVal = last.tw + last.us;
+		events.push({
+			iso: startIso,
+			investTwd: initStockVal
+		});
+		for (const l of m.allTradeLogs) {
+			if (!l.dateIso || l.isPendingQty || l.dateIso <= startIso || l.dateIso > endIso) continue;
+			if (l.kind.includes("股息") || l.kind.includes("股利")) continue;
+			const fx = bh.getFx(l.dateIso);
+			const amtTwd = l.market === "台股" ? l.amtTwd || 0 : (l.amtUsd || 0) * fx;
+			if (amtTwd <= 0) continue;
+			events.push({
+				iso: l.dateIso,
+				investTwd: l.side === "買入" ? amtTwd : -amtTwd
+			});
+			externalFlowCount++;
+		}
+		if (m.rsuVests && m.rsuStockPriceUsd > 0) {
+			for (const v of m.rsuVests) if (v.dateIso > startIso && v.dateIso <= endIso) {
+				const vestValTwd = v.shares * m.rsuStockPriceUsd * bh.getFx(v.dateIso);
+				events.push({
+					iso: v.dateIso,
+					investTwd: vestValTwd
+				});
+				externalFlowCount++;
+			}
+		}
+		curveBase = pts.map((p) => ({
+			label: p.date,
+			iso: p.dateIso,
+			portVal: p.tw + p.us
+		}));
+	} else {
+		const asc = m.allTradeLogs.filter((l) => !l.isPendingQty && l.dateIso && l.adjQty > 0).slice().sort((a, b) => a.dateSort - b.dateSort || (a.side === "買入" ? -1 : 1) || a.sheetRow - b.sheetRow);
+		const loggedQty = {};
+		const snapDates = /* @__PURE__ */ new Set();
+		for (const l of asc) {
+			const sym = l.sym;
+			if (!loggedQty[sym]) loggedQty[sym] = 0;
+			const fx = bh.getFx(l.dateIso);
+			if (l.side === "買入") {
+				loggedQty[sym] += l.adjQty;
+				if (!l.kind.includes("股息") && !l.kind.includes("股利")) {
+					const amt = l.market === "台股" ? l.amtTwd || 0 : (l.amtUsd || 0) * fx;
+					if (amt > 0) {
+						events.push({
+							iso: l.dateIso,
+							investTwd: amt
+						});
+						snapDates.add(l.dateIso);
+						externalFlowCount++;
+					}
+				}
+			} else if (l.side === "賣出") {
+				const avail = Math.max(0, loggedQty[sym]);
+				const matched = Math.min(avail, l.adjQty);
+				loggedQty[sym] = Math.max(0, avail - matched);
+				if (matched > 0) {
+					const matchedProceeds = (l.market === "台股" ? l.amtTwd || 0 : (l.amtUsd || 0) * fx) * (matched / l.adjQty);
+					if (matchedProceeds > 0) {
+						events.push({
+							iso: l.dateIso,
+							investTwd: -matchedProceeds
+						});
+						snapDates.add(l.dateIso);
+						externalFlowCount++;
+					}
+				}
+			}
+		}
+		endIso = todayIso;
+		startIso = events.length ? events[0].iso : endIso;
+		portEndVal = 0;
+		for (const [sym, q] of Object.entries(loggedQty)) {
+			if (q <= 1e-6) continue;
+			const h = m.tickerMap[sym];
+			if (h && h.marketPrice > 0) portEndVal += q * h.marketPrice * (h.isUsdPrice ? m.usdTwd : 1);
+			else {
+				const bPx = bh.getTwdPrice(sym, endIso);
+				if (bPx) portEndVal += q * bPx;
+			}
+		}
+		const sampleIsos = Array.from(/* @__PURE__ */ new Set([
+			...snapDates,
+			...(m.history || []).map((p) => p.dateIso),
+			endIso
+		])).filter((d) => d >= startIso && d <= endIso).sort();
+		let cumInv = 0;
+		const evMap = /* @__PURE__ */ new Map();
+		for (const e of events) evMap.set(e.iso, (evMap.get(e.iso) || 0) + e.investTwd);
+		const t0 = parseDateLoose(startIso)?.getTime() || 0;
+		const t1 = parseDateLoose(endIso)?.getTime() || 1;
+		const totNetInv = events.reduce((s, x) => s + x.investTwd, 0);
+		const totProfit = portEndVal - totNetInv;
+		curveBase = sampleIsos.map((dIso) => {
+			cumInv += evMap.get(dIso) || 0;
+			if (dIso === endIso) return {
+				label: dIso.replace(/-/g, "/"),
+				iso: dIso,
+				portVal: portEndVal
+			};
+			const ti = parseDateLoose(dIso)?.getTime() || t0;
+			const prog = t1 > t0 ? (ti - t0) / (t1 - t0) : 1;
+			return {
+				label: dIso.replace(/-/g, "/"),
+				iso: dIso,
+				portVal: Math.max(0, cumInv + totProfit * prog)
+			};
+		});
+	}
+	const netInvestedTwd = events.reduce((s, e) => s + e.investTwd, 0);
+	const netProfitTwd = portEndVal - netInvestedTwd;
+	const simpleReturnPct = netInvestedTwd > 0 ? netProfitTwd / netInvestedTwd * 100 : 0;
+	const portCfs = events.map((e) => ({
+		iso: e.iso,
+		amount: -e.investTwd
+	}));
+	portCfs.push({
+		iso: endIso,
+		amount: portEndVal
+	});
+	const portXirrPct = solveXirrPct(portCfs);
+	const evalDates = curveBase.map((c) => c.iso);
+	const benchResults = {};
+	for (const b of XIRR_BENCH_LIST) {
+		const sim = simulateShadowBenchmark(events, evalDates, endIso, b.key, bh);
+		const bProfit = sim.endVal - netInvestedTwd;
+		const bSimplePct = netInvestedTwd > 0 ? bProfit / netInvestedTwd * 100 : 0;
+		benchResults[b.key] = {
+			...b,
+			endVal: sim.endVal,
+			xirrPct: sim.xirrPct,
+			simplePct: bSimplePct,
+			diffTwd: portEndVal - sim.endVal,
+			alphaPct: portXirrPct !== null && sim.xirrPct !== null ? portXirrPct - sim.xirrPct : null,
+			valAtIso: sim.valAtIso
+		};
+	}
+	return {
+		effectiveScope,
+		startIso,
+		endIso,
+		portEndVal,
+		netInvestedTwd,
+		netProfitTwd,
+		simpleReturnPct,
+		portXirrPct,
+		externalFlowCount,
+		curveBase,
+		benchResults
+	};
+}
+/**
+* Computes individual holding money-weighted XIRR and total return rankings.
+*/
+function computePerTickerXirr(m, todayIso = todayIsoStr()) {
+	const bh = m.benchHelper;
+	const bySym = /* @__PURE__ */ new Map();
+	const asc = m.allTradeLogs.filter((l) => !l.isPendingQty && l.dateIso && l.adjQty > 0).slice().sort((a, b) => a.dateSort - b.dateSort || (a.side === "買入" ? -1 : 1) || a.sheetRow - b.sheetRow);
+	for (const l of asc) {
+		if (!bySym.has(l.sym)) bySym.set(l.sym, {
+			sym: l.sym,
+			market: l.market,
+			qty: 0,
+			buyTwd: 0,
+			sellTwd: 0,
+			cfs: []
+		});
+		const rec = bySym.get(l.sym);
+		const fx = bh.getFx(l.dateIso);
+		if (l.side === "買入") {
+			rec.qty += l.adjQty;
+			if (!l.kind.includes("股息") && !l.kind.includes("股利")) {
+				const amt = l.market === "台股" ? l.amtTwd || 0 : (l.amtUsd || 0) * fx;
+				if (amt > 0) {
+					rec.buyTwd += amt;
+					rec.cfs.push({
+						iso: l.dateIso,
+						amount: -amt
+					});
+				}
+			}
+		} else if (l.side === "賣出") {
+			const avail = Math.max(0, rec.qty);
+			const matched = Math.min(avail, l.adjQty);
+			rec.qty = Math.max(0, avail - matched);
+			if (matched > 0) {
+				const proc = (l.market === "台股" ? l.amtTwd || 0 : (l.amtUsd || 0) * fx) * (matched / l.adjQty);
+				if (proc > 0) {
+					rec.sellTwd += proc;
+					rec.cfs.push({
+						iso: l.dateIso,
+						amount: proc
+					});
+				}
+			}
+		}
+	}
+	const rows = [];
+	for (const rec of bySym.values()) {
+		if (rec.buyTwd <= 0) continue;
+		let curValTwd = 0;
+		if (rec.qty > 1e-6) {
+			const h = m.tickerMap[rec.sym];
+			if (h && h.marketPrice > 0) curValTwd = rec.qty * h.marketPrice * (h.isUsdPrice ? m.usdTwd : 1);
+			else {
+				const bPx = bh.getTwdPrice(rec.sym, todayIso);
+				if (bPx) curValTwd = rec.qty * bPx;
+			}
+		}
+		const cfs = rec.cfs.slice();
+		if (curValTwd > 1) cfs.push({
+			iso: todayIso,
+			amount: curValTwd
+		});
+		const totalOut = rec.sellTwd + curValTwd;
+		const pnlTwd = totalOut - rec.buyTwd;
+		const roiPct = rec.buyTwd > 0 ? pnlTwd / rec.buyTwd * 100 : 0;
+		const firstMs = cfs.length ? parseDateLoose(cfs[0].iso)?.getTime() || 0 : 0;
+		const lastMs = cfs.length ? parseDateLoose(cfs[cfs.length - 1].iso)?.getTime() || 0 : 0;
+		const spanDays = firstMs > 0 && lastMs >= firstMs ? Math.max(1, Math.round((lastMs - firstMs) / 864e5)) : 0;
+		const xirr = solveXirrPct(cfs);
+		rows.push({
+			sym: rec.sym,
+			market: rec.market,
+			buyTwd: rec.buyTwd,
+			outTwd: totalOut,
+			pnlTwd,
+			roiPct,
+			spanDays,
+			xirrPct: xirr,
+			sortMetric: spanDays >= 60 && xirr !== null ? xirr : roiPct,
+			isClosed: rec.qty <= 1e-4
+		});
+	}
+	rows.sort((a, b) => (b.sortMetric ?? -999) - (a.sortMetric ?? -999));
+	return rows;
+}
+// src/core/report.ts
+function getAvailableReportMonths(m, todayIso = todayIsoStr()) {
+	const set = /* @__PURE__ */ new Set();
+	set.add(todayIso.slice(0, 7));
+	for (const h of m.history || []) if (h.dateIso) set.add(h.dateIso.slice(0, 7));
+	for (const l of m.allTradeLogs || []) if (l.dateIso && !l.isPendingDca) set.add(l.dateIso.slice(0, 7));
+	return Array.from(set).filter(Boolean).sort().reverse();
+}
+function computeMonthReportStats(m, ym, todayIso = todayIsoStr()) {
+	const isCurrentMonth = ym === todayIso.slice(0, 7);
+	const monthPts = (m.history || []).filter((p) => p.dateIso && p.dateIso.slice(0, 7) === ym);
+	let prevEndPt = null;
+	for (const p of m.history || []) if (p.dateIso && p.dateIso.slice(0, 7) < ym) prevEndPt = p;
+	const startVal = prevEndPt ? prevEndPt.total : monthPts.length ? monthPts[0].total : m.totalAssets;
+	const endPt = monthPts.length ? monthPts[monthPts.length - 1] : null;
+	const endVal = endPt ? endPt.total : m.totalAssets;
+	const deltaVal = endVal - startVal;
+	const deltaPct = startVal > 0 ? deltaVal / startVal * 100 : 0;
+	const twVal = endPt ? endPt.tw : m.twTotal;
+	const usVal = endPt ? endPt.us : m.usTotal;
+	const cashVal = endPt ? Math.max(0, endPt.total - endPt.tw - endPt.us) : m.cashTotal;
+	let peakUpToYm = endVal;
+	for (const p of m.history || []) if (p.dateIso && p.dateIso.slice(0, 7) <= ym && p.total > peakUpToYm) peakUpToYm = p.total;
+	const ddPct = peakUpToYm > 0 ? (endVal - peakUpToYm) / peakUpToYm * 100 : 0;
+	const trades = m.allTradeLogs.filter((l) => l.dateIso && l.dateIso.slice(0, 7) === ym && !l.isPendingQty).slice().sort((a, b) => a.dateSort - b.dateSort);
+	let twBuy = 0;
+	let twSell = 0;
+	let usBuyUsd = 0;
+	let usSellUsd = 0;
+	for (const t of trades) if (t.market === "台股") {
+		if (t.side === "買入") twBuy += t.amtTwd || 0;
+		else twSell += t.amtTwd || 0;
+	} else if (t.side === "買入") usBuyUsd += t.amtUsd || 0;
+	else usSellUsd += t.amtUsd || 0;
+	const [yNum, mNum] = ym.split("-").map(Number);
+	const nextDate = new Date(yNum, mNum, 1);
+	const nextYm = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, "0")}`;
+	const nextMonthVests = (m.rsuVests || []).filter((v) => v.dateIso && v.dateIso.slice(0, 7) === nextYm);
+	const xirrSnap = computeXirrComparison(m, "HIST_ALL", todayIso);
+	const b5050 = xirrSnap.benchResults["BLEND_50_50"];
+	return {
+		ym,
+		nextYm,
+		isCurrentMonth,
+		recordDays: monthPts.length,
+		startVal,
+		endVal,
+		deltaVal,
+		deltaPct,
+		ddPct,
+		twVal,
+		usVal,
+		cashVal,
+		trades,
+		twBuy,
+		twSell,
+		usBuyUsd,
+		usSellUsd,
+		nextMonthVests,
+		portXirrPct: xirrSnap.portXirrPct,
+		bench5050XirrPct: b5050 ? b5050.xirrPct : null,
+		alpha5050Twd: b5050 ? b5050.diffTwd : 0
+	};
+}
+function buildPlainTextReportSummary$1(m, ym, hideAmounts = false) {
+	const st = computeMonthReportStats(m, ym);
+	const safeEnd = Math.max(1, st.endVal);
+	const fTwd = (v, signed = false) => formatTwdValue(v, hideAmounts, signed);
+	const fUsd = (v) => formatUsdValue(v, hideAmounts, false);
+	const fPct = (v, signed = false) => formatPctValue(v, signed);
+	return [
+		`📊 【${st.ym} 個人財務與資產配置月報】`,
+		`• 月末總資產：${fTwd(st.endVal)}（單月變化 ${fTwd(st.deltaVal, true)} / ${fPct(st.deltaPct, true)}）`,
+		`• 風險指標：實質槓桿 ${m.effLeverage.toFixed(3)}x ｜ 距高點回撤 ${st.ddPct.toFixed(2)}%`,
+		`• 資產配置：台股 ${(st.twVal / safeEnd * 100).toFixed(1)}% (${fTwd(st.twVal)}) · 美股 ${(st.usVal / safeEnd * 100).toFixed(1)}% (${fTwd(st.usVal)}) · 現金 ${(st.cashVal / safeEnd * 100).toFixed(1)}% (${fTwd(st.cashVal)})`,
+		`• 真實年化 XIRR：${st.portXirrPct !== null ? fPct(st.portXirrPct, true) : "—"}（同現金流 50/50 台美大盤：${st.bench5050XirrPct !== null ? fPct(st.bench5050XirrPct, true) : "—"}）`,
+		`• 當月交易：共 ${st.trades.length} 筆（台股買 ${fTwd(st.twBuy)} / 賣 ${fTwd(st.twSell)}；美股買 ${fUsd(st.usBuyUsd)} / 賣 ${fUsd(st.usSellUsd)}）`
+	].join("\n");
+}
+// src/services/demo.ts
+function buildDemoDashboardPayload(now = /* @__PURE__ */ new Date()) {
+	const isoToday = `${now.getFullYear()}/${now.getMonth() + 1}/${now.getDate()}`;
+	const yr = now.getFullYear();
 	const histRows = [[
 		"日期",
 		"台股資產",
@@ -1750,7 +2202,7 @@ function buildDemoDashboardPayload() {
 			1597178
 		]
 	]) {
-		const d = new Date(today.getFullYear(), today.getMonth() - mAgo, mAgo === 0 ? today.getDate() : 15);
+		const d = new Date(now.getFullYear(), now.getMonth() - mAgo, mAgo === 0 ? now.getDate() : 15);
 		histRows.push([
 			`${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`,
 			String(tw),
@@ -2261,7 +2713,7 @@ function buildDemoDashboardPayload() {
 		schemaVersion: 2,
 		spreadsheetTitle: "範例帳本 (Demo Mode)",
 		spreadsheetUrl: "#demo",
-		updatedAt: `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")} Demo`,
+		updatedAt: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")} Demo`,
 		rebalanceTargets: {
 			twPct: 45,
 			usPct: 35,
@@ -2283,16 +2735,26 @@ function buildDemoDashboardPayload() {
 		}
 	};
 }
-function simulateDemoWrite(gasMethod, payload) {
-	const sheets = JSON.parse(JSON.stringify(state.rawSheets || {}));
-	const ovFormulas = JSON.parse(JSON.stringify(state.overviewFormulas || []));
+function parseOptionalNumber(raw) {
+	if (raw === void 0 || raw === null) return null;
+	const s = String(raw).trim();
+	if (!s) return null;
+	const n = parseFloat(s);
+	return Number.isFinite(n) ? n : null;
+}
+/**
+* Purely simulates write operations against an isolated deep copy of Demo sheets.
+*/
+function applyDemoMutation(rawSheets, overviewFormulas, usdTwd, gasMethod, payload, spreadsheetTitle = "範例帳本 (Demo Mode)") {
+	const sheets = JSON.parse(JSON.stringify(rawSheets || {}));
+	const ovFormulas = JSON.parse(JSON.stringify(overviewFormulas || []));
 	const ovEntry = resolveSheetEntry(sheets, "overview");
 	const twEntry = resolveSheetEntry(sheets, "twTrades");
 	const usEntry = resolveSheetEntry(sheets, "usTrades");
 	const ovRows = ovEntry.rows;
 	const ovMap = resolveHeaderMap(ovRows[0] || [], OVERVIEW_HEADER_SPECS);
-	const fx = state.computed && state.computed.usdTwd || 32.5;
-	let msg = "已在 Demo 模式模擬更新！";
+	const fx = usdTwd > 0 ? usdTwd : 32.5;
+	let toastMessage = "已在 Demo 模式模擬更新！";
 	if (gasMethod === "submitTrade") {
 		const isTw = String(payload.market || "TW").toUpperCase() === "TW";
 		const entry = isTw ? twEntry : usEntry;
@@ -2300,14 +2762,15 @@ function simulateDemoWrite(gasMethod, payload) {
 		const trMap = resolveHeaderMap(entry.rows[0] || [], specs);
 		const ticker = String(payload.ticker || "").trim().toUpperCase();
 		const side = normalizeSideLabel(payload.side || "買入");
-		const px = payload.price !== "" ? parseFloat(payload.price) : null;
-		const sh = payload.shares !== "" ? parseFloat(payload.shares) : 0;
-		const fee = payload.fee !== "" ? parseFloat(payload.fee) : isTw ? 1 : 0;
-		const amt = payload.amount !== "" ? parseFloat(payload.amount) : px && sh ? +(px * sh + (isTw ? side === "買入" ? fee : -fee : 0)).toFixed(2) : 0;
+		const px = parseOptionalNumber(payload.price);
+		const sh = parseOptionalNumber(payload.shares) ?? 0;
+		const fee = parseOptionalNumber(payload.fee) ?? (isTw ? 1 : 0);
+		const parsedAmt = parseOptionalNumber(payload.amount);
+		const amt = parsedAmt !== null ? parsedAmt : px && sh ? +(px * sh + (isTw ? side === "買入" ? fee : -fee : 0)).toFixed(2) : 0;
 		const width = Math.max((entry.rows[0] || []).length, 9);
 		const rowArr = new Array(width).fill("");
 		const put = (col, val) => {
-			if (col >= 0) rowArr[col] = val;
+			if (col !== void 0 && col >= 0) rowArr[col] = val;
 		};
 		put(trMap.date, String(payload.date || todayIsoStr()).replace(/-/g, "/"));
 		put(trMap.side, side);
@@ -2334,11 +2797,12 @@ function simulateDemoWrite(gasMethod, payload) {
 				r[ovMap.valueTwd] = `NT$${nextTwd.toLocaleString("en-US")}`;
 			}
 		} else if (matchIdx < 0 && side === "買入" && payload.addToOverview && sh > 0) {
-			const sumAnchor = ovRows.findIndex((r, idx) => idx > 0 && String(r[ovMap.name] || "").trim() === (isTw ? "台股部位資產" : "美股部位資產"));
+			const targetSummaryName = isTw ? "台股部位資產" : "美股部位資產";
+			const sumAnchor = ovRows.findIndex((r, idx) => idx > 0 && String(r[ovMap.name] || "").trim() === targetSummaryName);
 			const insertAt = sumAnchor > 0 ? sumAnchor : ovRows.length;
 			const uPx = px || 100;
 			const twdVal = Math.round(sh * uPx * (isTw ? 1 : fx));
-			const newRow = new Array(Math.max(ovRows[0].length, 8)).fill("");
+			const newRow = new Array(Math.max((ovRows[0] || []).length, 8)).fill("");
 			newRow[ovMap.name] = String(payload.displayName || "").trim() || ticker.replace("TPE:", "");
 			newRow[ovMap.qty] = String(sh);
 			newRow[ovMap.unitPrice] = isTw ? `NT$${uPx.toFixed(2)}` : `USD $${uPx.toFixed(2)}`;
@@ -2349,7 +2813,7 @@ function simulateDemoWrite(gasMethod, payload) {
 			newForm[ovMap.unitPrice] = `=GOOGLEFINANCE("${ticker}","price")`;
 			ovFormulas.splice(insertAt, 0, newForm);
 		}
-		msg = `🧪 Demo 模式：已模擬寫入 ${ticker} ${side}紀錄`;
+		toastMessage = `🧪 Demo 模式：已模擬寫入 ${ticker} ${side}紀錄`;
 	} else if (gasMethod === "updateCashBalance") {
 		const acct = String(payload.accountName || "").trim();
 		const amt = Number(payload.amount || 0);
@@ -2359,7 +2823,7 @@ function simulateDemoWrite(gasMethod, payload) {
 			r[ovMap.valueTwd] = `NT$${Math.round(amt * mult).toLocaleString("en-US")}`;
 			if (payload.updateNote && ovMap.note >= 0) r[ovMap.note] = String(payload.note || "");
 		}
-		msg = `🧪 Demo 模式：已更新「${acct}」模擬餘額`;
+		toastMessage = `🧪 Demo 模式：已更新「${acct}」模擬餘額`;
 	} else if (gasMethod === "fillPendingDca") {
 		const rn = Number(payload.rowNumber || 0) - 1;
 		const px = Number(payload.price || 0);
@@ -2370,7 +2834,7 @@ function simulateDemoWrite(gasMethod, payload) {
 			row[twMap.price] = String(px);
 			row[twMap.shares] = String(Math.floor(amt / px));
 		}
-		msg = `🧪 Demo 模式：已回填第 #${payload.rowNumber} 列模擬成交價`;
+		toastMessage = `🧪 Demo 模式：已回填第 #${payload.rowNumber} 列模擬成交價`;
 	} else if (gasMethod === "updateInitialCost") {
 		const name = String(payload.holdingName || "").trim();
 		const r = ovRows.find((row, idx) => idx > 0 && String(row[ovMap.name] || "").trim() === name);
@@ -2379,19 +2843,336 @@ function simulateDemoWrite(gasMethod, payload) {
 			r[ovMap.initQty] = String(payload.initQty ?? "");
 			r[ovMap.initCost] = String(payload.initAvgCost ?? "");
 		}
-		msg = `🧪 Demo 模式：已暫存「${name}」期初成本設定`;
+		toastMessage = `🧪 Demo 模式：已暫存「${name}」期初成本設定`;
 	}
-	applyPayloadToState({
-		ok: true,
-		isDemo: true,
-		spreadsheetTitle: state.spreadsheetTitle || "範例帳本 (Demo Mode)",
-		spreadsheetUrl: "#demo",
-		updatedAt: "Demo 即時模擬",
-		sheets,
-		overviewFormulas: ovFormulas
-	}, "🧪 Demo 展示預覽模式 · 貼上配對碼即可切換真實帳本");
+	return {
+		payload: {
+			ok: true,
+			isDemo: true,
+			spreadsheetTitle: spreadsheetTitle || "範例帳本 (Demo Mode)",
+			spreadsheetUrl: "#demo",
+			updatedAt: "Demo 即時模擬",
+			sheets,
+			overviewFormulas: ovFormulas
+		},
+		toastMessage
+	};
+}
+// src/services/pairing.ts
+var PwaCloudApiError = class extends Error {
+	isUnauthorized;
+	isMissingConfig;
+	constructor(message, opts = {}) {
+		super(message);
+		this.name = "PwaCloudApiError";
+		this.isUnauthorized = Boolean(opts.isUnauthorized);
+		this.isMissingConfig = Boolean(opts.isMissingConfig);
+	}
+};
+function utf8ToBase64(text) {
+	const bytes = new TextEncoder().encode(text);
+	let bin = "";
+	for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+	return btoa(bin);
+}
+function base64ToUtf8(b64) {
+	const bin = atob(b64);
+	const bytes = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+	return new TextDecoder().decode(bytes);
+}
+function getRuntimeMode() {
+	if (typeof window !== "undefined" && window.google?.script?.run) return "gas";
+	const forcePwa = typeof location !== "undefined" && new URLSearchParams(location.search).get("pwa") === "1";
+	const host = typeof location !== "undefined" && location.hostname ? location.hostname : "";
+	if (!forcePwa && (host === "127.0.0.1" || host === "localhost")) return "localhost";
+	return "pwa";
+}
+function hasPwaCloudBridge$1(cfg) {
+	return Boolean(cfg && cfg.apiUrl && cfg.apiToken);
+}
+function isCloudCapable$1(cfg) {
+	return getRuntimeMode() === "gas" || hasPwaCloudBridge$1(cfg);
+}
+function validateAppsScriptExecUrl(rawUrl, sourceLabel = "設定中") {
+	const apiUrl = String(rawUrl || "").trim();
+	if (!apiUrl.startsWith("https://script.google.com/")) throw new Error(`${sourceLabel}的 Apps Script 網址無效（需為 https://script.google.com/.../exec）`);
+	if (/\/dev(?:$|\?)/.test(apiUrl)) throw new Error(`${sourceLabel}的網址結尾是 /dev（測試網址，外部手機無法連線）！請到 Apps Script「部署 → 管理部署作業」複製結尾為 /exec 的正式網址重新產生配對碼`);
+	if (!/\/exec(?:$|\?)/.test(apiUrl)) throw new Error(`${sourceLabel}的網址必須以 /exec 結尾（不可貼編輯頁網址），請從「部署 → 管理部署作業」複製網頁應用程式網址`);
+	return apiUrl;
+}
+function parsePairingCode(rawStr) {
+	let s = String(rawStr || "").trim();
+	if (!s) throw new Error("請貼上配對碼");
+	const prefixIdx = s.indexOf("WDB1:");
+	if (prefixIdx >= 0) s = s.slice(prefixIdx + 5);
+	s = s.replace(/\s+/g, "").replace(/^["'`]+|["'`]+$/g, "");
+	let decoded = null;
+	try {
+		const jsonStr = base64ToUtf8(s);
+		decoded = JSON.parse(jsonStr);
+	} catch {
+		throw new Error("配對碼格式不正確，請重新從 Google Sheet 選單複製 WDB1:... 配對碼");
+	}
+	const apiUrl = validateAppsScriptExecUrl(decoded?.u, "配對碼內");
+	const apiToken = String(decoded?.t || "").trim();
+	if (apiToken.length < 16) throw new Error("配對碼內的加密金鑰無效");
+	return {
+		apiUrl,
+		apiToken
+	};
+}
+function encodePairingCode(apiUrl, apiToken) {
+	const cleanUrl = validateAppsScriptExecUrl(apiUrl, "目前設定中");
+	const cleanToken = String(apiToken || "").trim();
+	if (cleanToken.length < 16) throw new Error("目前沒有有效的 256-bit 加密連線金鑰");
+	return "WDB1:" + utf8ToBase64(JSON.stringify({
+		u: cleanUrl,
+		t: cleanToken
+	}));
+}
+function formatMaskedExecUrl(apiUrl) {
+	const s = String(apiUrl || "").trim();
+	if (!s) return "";
+	if (s.length <= 46) return s;
+	return `${s.slice(0, 32)}...${s.slice(-18)}`;
+}
+/**
+* Posts an authenticated JSON command to the deployed Google Apps Script Web App bridge.
+*/
+async function postPwaCloudApi(cfg, action, payload = {}) {
+	if (!hasPwaCloudBridge$1(cfg)) throw new PwaCloudApiError("請先貼上 Google Sheet 專屬配對碼以連線雲端帳本", { isMissingConfig: true });
+	let resp;
+	try {
+		resp = await fetch(cfg.apiUrl, {
+			method: "POST",
+			redirect: "follow",
+			credentials: "omit",
+			headers: { "Content-Type": "text/plain;charset=utf-8" },
+			body: JSON.stringify({
+				token: cfg.apiToken,
+				action,
+				payload
+			})
+		});
+	} catch (netErr) {
+		const rawMsg = netErr instanceof Error ? netErr.message : String(netErr || "");
+		if (/load failed|failed to fetch|networkerror|cors/i.test(rawMsg)) throw new PwaCloudApiError(`瀏覽器無法跨網域連線至 Apps Script（${rawMsg}）。請檢查：(1) Apps Script 部署「誰可以存取」是否為最底下的「所有人 (Anyone)」（不可選「僅限我自己」或「具有 Google 帳戶的所有人」）；(2) 網址是否為「部署 → 管理部署作業」的最新 /exec；(3) 若有開啟 VPN / iCloud 私密轉送，請暫時關閉重試。`);
+		throw new PwaCloudApiError(`網路連線異常：${rawMsg}`);
+	}
+	const text = await resp.text();
+	let data = null;
+	try {
+		data = JSON.parse(text);
+	} catch {
+		throw new PwaCloudApiError(/ServiceLogin|accounts\.google|<!doctype|<html/i.test(text || "") ? `Apps Script 回傳了登入頁或網頁而非資料（HTTP ${resp.status}）；請確認部署「誰可以存取」已選為「所有人 (Anyone)」且點「建立新版本」！` : `Apps Script 回傳非預期格式（HTTP ${resp.status}），請確認 /exec 部署版本為最新。`);
+	}
+	if (data && data.unauthorized) throw new PwaCloudApiError(data.error || "配對金鑰無效，請重新貼上最新配對碼", { isUnauthorized: true });
+	if (!data || data.ok === false) throw new PwaCloudApiError(data && data.error || `雲端 API 執行失敗（HTTP ${resp.status}）`);
+	return data;
+}
+// src/utils/storage.ts
+function safeStorageGet(store, key, fallback = "") {
+	try {
+		if (!store) return fallback;
+		return store.getItem(key) ?? fallback;
+	} catch {
+		return fallback;
+	}
+}
+function safeStorageJsonGet(store, key, fallback) {
+	try {
+		if (!store) return fallback;
+		const raw = store.getItem(key);
+		return raw ? JSON.parse(raw) : fallback;
+	} catch {
+		return fallback;
+	}
+}
+function safeStorageSet(store, key, val) {
+	try {
+		if (!store) return;
+		store.setItem(key, val);
+	} catch {}
+}
+function safeStorageRemove(store, key) {
+	try {
+		if (!store || !store.removeItem) return;
+		store.removeItem(key);
+	} catch {}
+}
+function escapeHtml(val) {
+	return String(val === null || val === void 0 ? "" : val).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+async function copyTextSafe(text) {
+	if (typeof navigator !== "undefined" && navigator.clipboard && navigator.clipboard.writeText) try {
+		await navigator.clipboard.writeText(text);
+		return true;
+	} catch {}
+	const ta = document.createElement("textarea");
+	ta.value = text;
+	ta.setAttribute("readonly", "");
+	ta.style.position = "fixed";
+	ta.style.opacity = "0";
+	document.body.appendChild(ta);
+	ta.select();
+	let ok = false;
+	try {
+		ok = Boolean(document.execCommand && document.execCommand("copy"));
+	} catch {
+		ok = false;
+	}
+	ta.remove();
+	if (!ok) throw new Error("瀏覽器限制自動複製，請改用手動全選複製");
+	return true;
+}
+// src/app/state.ts
+var STORAGE_KEYS = {
+	HIDE_AMOUNTS: "wealth_hide_amounts",
+	CUSTOM_COSTS: "wealth_custom_costs_v1",
+	REBALANCE_TARGETS: "wealth_rebalance_targets_v1",
+	REPORT_EMAIL: "wealth_report_email",
+	PWA_CONFIG: "wealth_pwa_config_v1",
+	PWA_SNAPSHOT: "wealth_pwa_snapshot_v1",
+	DEMO_ENTERED: "wealth_demo_entered",
+	IOS_BANNER_DISMISSED: "wealth_ios_banner_dismissed"
+};
+function getLocalStore() {
+	return typeof localStorage !== "undefined" ? localStorage : null;
+}
+function getSessionStore() {
+	return typeof sessionStorage !== "undefined" ? sessionStorage : null;
+}
+var state = {
+	rawSheets: null,
+	overviewFormulas: [],
+	updatedAt: null,
+	writeEnabled: true,
+	lastPairingFailed: false,
+	activePage: "overview",
+	hideAmounts: safeStorageGet(getSessionStore(), STORAGE_KEYS.HIDE_AMOUNTS) === "1",
+	includeUnvestedRsu: false,
+	pieMode: "holding",
+	activeSliceIndex: null,
+	histDays: 9999,
+	assetTab: "open",
+	catFilter: "ALL",
+	sortKey: "valueTwd",
+	sortDir: "desc",
+	trRange: "6M",
+	trStartDate: "",
+	trEndDate: "",
+	trDatesInitialized: false,
+	trMarket: "ALL",
+	trSide: "ALL",
+	trTicker: "ALL",
+	trKind: "ALL",
+	trIncludePending: true,
+	trSortKey: "date",
+	trSortDir: "desc",
+	tradeSide: "買入",
+	amountManuallyEdited: false,
+	customCosts: safeStorageJsonGet(getLocalStore(), STORAGE_KEYS.CUSTOM_COSTS, {}),
+	rebTargets: Object.assign({
+		twPct: 50,
+		usPct: 40,
+		cashPct: 10,
+		targetLev: 1.15,
+		mode: "inflow",
+		newCashTwd: null
+	}, safeStorageJsonGet(getLocalStore(), STORAGE_KEYS.REBALANCE_TARGETS, {})),
+	xirrScope: "HIST_ALL",
+	xirrBench: "BLEND_50_50",
+	repSelectedYm: "",
+	repConfig: {
+		email: safeStorageGet(getLocalStore(), STORAGE_KEYS.REPORT_EMAIL, ""),
+		triggerEnabled: false
+	},
+	pwaConfig: Object.assign({
+		apiUrl: "",
+		apiToken: ""
+	}, safeStorageJsonGet(getLocalStore(), STORAGE_KEYS.PWA_CONFIG, {})),
+	spreadsheetTitle: "財務狀況總整理",
+	spreadsheetUrl: "#",
+	isDemoMode: false,
+	computed: null
+};
+function fmtTwd(n, signed = false) {
+	return formatTwdValue(n, state.hideAmounts, signed);
+}
+function fmtUsd(n, signed = false) {
+	return formatUsdValue(n, state.hideAmounts, signed);
+}
+function fmtQty(n, suffix = "") {
+	return formatQtyValue(n, state.hideAmounts, suffix);
+}
+function fmtPct(n, signed = false) {
+	return formatPctValue(n, signed);
+}
+function persistCustomCostsLocal(customCosts = state.customCosts) {
+	safeStorageSet(getLocalStore(), STORAGE_KEYS.CUSTOM_COSTS, JSON.stringify(customCosts));
+}
+function persistRebTargetsLocal() {
+	safeStorageSet(getLocalStore(), STORAGE_KEYS.REBALANCE_TARGETS, JSON.stringify(state.rebTargets));
+}
+function persistPwaConfigLocal(cfg = state.pwaConfig) {
+	safeStorageSet(getLocalStore(), STORAGE_KEYS.PWA_CONFIG, JSON.stringify(cfg));
+}
+function clearPwaSnapshotCache() {
+	safeStorageRemove(getLocalStore(), STORAGE_KEYS.PWA_SNAPSHOT);
+}
+function saveSnapshotCache(res) {
+	if (!res || !res.sheets) return;
+	const snap = {
+		spreadsheetTitle: res.spreadsheetTitle || state.spreadsheetTitle,
+		spreadsheetUrl: res.spreadsheetUrl || state.spreadsheetUrl,
+		updatedAt: res.updatedAt || (/* @__PURE__ */ new Date()).toISOString(),
+		customCosts: res.customCosts || state.customCosts,
+		rebalanceTargets: Object.assign({}, state.rebTargets, res.rebalanceTargets || {}),
+		monthlyReportConfig: Object.assign({}, state.repConfig, res.monthlyReportConfig || {}),
+		overviewFormulas: res.overviewFormulas || state.overviewFormulas || [],
+		sheets: res.sheets
+	};
+	safeStorageSet(getLocalStore(), STORAGE_KEYS.PWA_SNAPSHOT, JSON.stringify(snap));
+}
+function loadSnapshotCache() {
+	const parsed = safeStorageJsonGet(getLocalStore(), STORAGE_KEYS.PWA_SNAPSHOT, null);
+	return parsed && parsed.sheets ? parsed : null;
+}
+// src/app/legacy-app.js
+function showToast(msg) {
+	const el = document.getElementById("toast");
+	el.textContent = msg;
+	el.classList.add("show");
+	clearTimeout(showToast._t);
+	showToast._t = setTimeout(() => el.classList.remove("show"), 3800);
+}
+function computeModel(sheets, ovFormulas = []) {
+	return computeModel$1(sheets, ovFormulas, {
+		customCosts: state.customCosts,
+		includeUnvestedRsu: state.includeUnvestedRsu
+	});
+}
+function hasPwaCloudBridge() {
+	return hasPwaCloudBridge$1(state.pwaConfig);
+}
+function isCloudCapable() {
+	return isCloudCapable$1(state.pwaConfig);
+}
+function savePwaConfig(cfg) {
+	state.pwaConfig = {
+		apiUrl: String(cfg && cfg.apiUrl || "").trim(),
+		apiToken: String(cfg && cfg.apiToken || "").trim()
+	};
+	persistPwaConfigLocal(state.pwaConfig);
+	updatePwaModalUi();
+}
+function simulateDemoWrite(gasMethod, payload) {
+	const fx = state.computed && state.computed.usdTwd || 32.5;
+	const { payload: nextPayload, toastMessage } = applyDemoMutation(state.rawSheets, state.overviewFormulas, fx, gasMethod, payload, state.spreadsheetTitle);
+	applyPayloadToState(nextPayload, "🧪 Demo 展示預覽模式 · 貼上配對碼即可切換真實帳本");
 	populateModalControls();
-	showToast(msg);
+	showToast(toastMessage);
 	return true;
 }
 function applyPayloadToState(res, statusText) {
@@ -2403,9 +3184,7 @@ function applyPayloadToState(res, statusText) {
 	if (res.updatedAt) state.updatedAt = res.updatedAt;
 	if (res.customCosts) {
 		state.customCosts = res.customCosts;
-		try {
-			localStorage.setItem("wealth_custom_costs_v1", JSON.stringify(res.customCosts));
-		} catch (_) {}
+		persistCustomCostsLocal(res.customCosts);
 	}
 	const demoBanner = document.getElementById("demoModeBanner");
 	if (demoBanner) demoBanner.style.display = state.isDemoMode ? "flex" : "none";
@@ -2415,12 +3194,6 @@ function applyPayloadToState(res, statusText) {
 	if (statusEl && statusText) statusEl.textContent = statusText;
 	refreshAllViews();
 	updatePwaModalUi();
-}
-function formatMaskedExecUrl(apiUrl) {
-	const s = String(apiUrl || "").trim();
-	if (!s) return "";
-	if (s.length <= 46) return s;
-	return `${s.slice(0, 32)}...${s.slice(-18)}`;
 }
 function setPwaPairError(msg, apiUrlHint) {
 	const box = document.getElementById("pwaPairErrorBox");
@@ -2452,42 +3225,12 @@ function setPwaPairError(msg, apiUrlHint) {
 	box.style.display = "block";
 }
 async function callPwaCloudApi(action, payload = {}) {
-	if (!hasPwaCloudBridge()) {
-		openPwaPairModal();
-		throw new Error("請先貼上 Google Sheet 專屬配對碼以連線雲端帳本");
-	}
-	let resp;
 	try {
-		resp = await fetch(state.pwaConfig.apiUrl, {
-			method: "POST",
-			redirect: "follow",
-			credentials: "omit",
-			headers: { "Content-Type": "text/plain;charset=utf-8" },
-			body: JSON.stringify({
-				token: state.pwaConfig.apiToken,
-				action,
-				payload
-			})
-		});
-	} catch (netErr) {
-		const rawMsg = netErr && netErr.message ? netErr.message : String(netErr || "");
-		if (/load failed|failed to fetch|networkerror|cors/i.test(rawMsg)) throw new Error(`瀏覽器無法跨網域連線至 Apps Script（${rawMsg}）。請檢查：(1) Apps Script 部署「誰可以存取」是否為最底下的「所有人 (Anyone)」（不可選「僅限我自己」或「具有 Google 帳戶的所有人」）；(2) 網址是否為「部署 → 管理部署作業」的最新 /exec；(3) 若有開啟 VPN / iCloud 私密轉送，請暫時關閉重試。`);
-		throw new Error(`網路連線異常：${rawMsg}`);
+		return await postPwaCloudApi(state.pwaConfig, action, payload);
+	} catch (err) {
+		if (err instanceof PwaCloudApiError && (err.isMissingConfig || err.isUnauthorized)) openPwaPairModal();
+		throw err;
 	}
-	const text = await resp.text();
-	let data;
-	try {
-		data = JSON.parse(text);
-	} catch (_) {
-		const looksLikeLogin = /ServiceLogin|accounts\.google|<!doctype|<html/i.test(text || "");
-		throw new Error(looksLikeLogin ? `Apps Script 回傳了登入頁或網頁而非資料（HTTP ${resp.status}）；請確認部署「誰可以存取」已選為「所有人 (Anyone)」且點「建立新版本」！` : `Apps Script 回傳非預期格式（HTTP ${resp.status}），請確認 /exec 部署版本為最新。`);
-	}
-	if (data && data.unauthorized) {
-		openPwaPairModal();
-		throw new Error(data.error || "配對金鑰無效，請重新貼上最新配對碼");
-	}
-	if (!data || data.ok === false) throw new Error(data && data.error || `雲端 API 執行失敗（HTTP ${resp.status}）`);
-	return data;
 }
 function updatePwaModalUi() {
 	const badge = document.getElementById("pwaConnStatusBadge");
@@ -3300,13 +4043,6 @@ function switchMainPage(page) {
 		behavior: "smooth"
 	});
 }
-function getDefaultMonthlyInvestTwd(m) {
-	if (!m || !m.allocations) return 5e4;
-	const inv = m.allocations.filter((a) => a.name.includes("投資")).reduce((s, a) => s + a.amount, 0);
-	if (inv > 0) return Math.round(inv);
-	const surplus = m.allocations.filter((a) => a.name.includes("結餘")).reduce((s, a) => s + a.amount, 0);
-	return surplus > 0 ? Math.round(surplus) : 5e4;
-}
 function renderRebalancePage(m) {
 	if (!m) return;
 	const rt = state.rebTargets;
@@ -3324,122 +4060,34 @@ function renderRebalancePage(m) {
 	syncPair("rebTwRange", "rebTwInput", rt.twPct);
 	syncPair("rebUsRange", "rebUsInput", rt.usPct);
 	syncPair("rebCashRange", "rebCashInput", rt.cashPct);
-	const rawSum = (Number(rt.twPct) || 0) + (Number(rt.usPct) || 0) + (Number(rt.cashPct) || 0);
+	const plan = computeRebalancePlan(m, rt);
+	const { rawSumPct: rawSum, isSumOk, totCurTwd: totCur, postTotalTwd: postTotal, inflowAmtTwd: inflowAmt, orderRows } = plan;
 	const sumBadge = document.getElementById("rebSumPctBadge");
-	const isSumOk = Math.abs(rawSum - 100) < .15;
 	sumBadge.textContent = isSumOk ? `✓ 目標合計 ${rawSum.toFixed(1)}%` : `⚠️ 目標合計 ${rawSum.toFixed(1)}%（計算已自動依比例正規化）`;
 	sumBadge.className = `badge ${isSumOk ? "badge-pos" : "badge-warn"}`;
-	const safeSum = rawSum > 0 ? rawSum : 100;
-	const wTarget = {
-		"台股": (Number(rt.twPct) || 0) / safeSum * 100,
-		"美股": (Number(rt.usPct) || 0) / safeSum * 100,
-		"現金": (Number(rt.cashPct) || 0) / safeSum * 100
-	};
-	const curVal = {
-		"台股": m.twTotal,
-		"美股": m.usTotal,
-		"現金": m.cashTotal
-	};
-	const totCur = Math.max(1, m.totalAssets);
-	const inflowAmt = rt.mode === "inflow" ? Math.max(0, Number(rt.newCashTwd) || 0) : 0;
-	const postTotal = totCur + inflowAmt;
-	const catDelta = {
-		"台股": 0,
-		"美股": 0,
-		"現金": 0
-	};
-	if (rt.mode === "inflow") {
-		const posGaps = {};
-		let gapSum = 0;
-		for (const c of [
-			"台股",
-			"美股",
-			"現金"
-		]) {
-			const idealVal = wTarget[c] / 100 * postTotal;
-			const g = Math.max(0, idealVal - curVal[c]);
-			posGaps[c] = g;
-			gapSum += g;
-		}
-		for (const c of [
-			"台股",
-			"美股",
-			"現金"
-		]) catDelta[c] = gapSum > 0 ? inflowAmt * (posGaps[c] / gapSum) : inflowAmt * (wTarget[c] / 100);
-	} else for (const c of [
-		"台股",
-		"美股",
-		"現金"
-	]) catDelta[c] = wTarget[c] / 100 * totCur - curVal[c];
 	const updateCatCard = (cat, badgeId, summaryId) => {
-		const curPct = curVal[cat] / totCur * 100;
-		const tgtPct = wTarget[cat];
-		const drift = curPct - tgtPct;
+		const c = plan.categories[cat];
 		const bEl = document.getElementById(badgeId);
-		if (Math.abs(drift) < 1) {
-			bEl.textContent = `目前 ${curPct.toFixed(1)}% (✓ 均衡)`;
+		if (Math.abs(c.driftPct) < 1) {
+			bEl.textContent = `目前 ${c.currentPct.toFixed(1)}% (✓ 均衡)`;
 			bEl.className = "badge badge-pos";
-		} else if (drift > 0) {
-			bEl.textContent = `目前 ${curPct.toFixed(1)}% (超配 +${drift.toFixed(1)}%)`;
+		} else if (c.driftPct > 0) {
+			bEl.textContent = `目前 ${c.currentPct.toFixed(1)}% (超配 +${c.driftPct.toFixed(1)}%)`;
 			bEl.className = "badge badge-warn";
 		} else {
-			bEl.textContent = `目前 ${curPct.toFixed(1)}% (低配 ${drift.toFixed(1)}%)`;
+			bEl.textContent = `目前 ${c.currentPct.toFixed(1)}% (低配 ${c.driftPct.toFixed(1)}%)`;
 			bEl.className = "badge badge-info";
 		}
-		const idealVal = tgtPct / 100 * postTotal;
-		const dVal = catDelta[cat];
-		const afterPct = (curVal[cat] + dVal) / postTotal * 100;
-		const actLabel = Math.abs(dVal) < 500 ? "維持現狀 (NT$0)" : dVal > 0 ? `<b style="color:var(--pos);">建議投入 +${fmtTwd(dVal)}</b>` : `<b style="color:var(--neg);">建議調節 ${fmtTwd(dVal, true)}</b>`;
+		const actLabel = Math.abs(c.deltaTwd) < 500 ? "維持現狀 (NT$0)" : c.deltaTwd > 0 ? `<b style="color:var(--pos);">建議投入 +${fmtTwd(c.deltaTwd)}</b>` : `<b style="color:var(--neg);">建議調節 ${fmtTwd(c.deltaTwd, true)}</b>`;
 		document.getElementById(summaryId).innerHTML = `
-      <div>目前市值：<b>${fmtTwd(curVal[cat])}</b> → 目標基準：<b>${fmtTwd(idealVal)}</b></div>
-      <div>本輪動作：${actLabel}（執行後佔比 <b>${afterPct.toFixed(1)}%</b>）</div>
+      <div>目前市值：<b>${fmtTwd(c.currentValTwd)}</b> → 目標基準：<b>${fmtTwd(c.idealValTwd)}</b></div>
+      <div>本輪動作：${actLabel}（執行後佔比 <b>${c.afterPct.toFixed(1)}%</b>）</div>
     `;
 	};
 	updateCatCard("台股", "rebTwDriftBadge", "rebTwSummary");
 	updateCatCard("美股", "rebUsDriftBadge", "rebUsSummary");
 	updateCatCard("現金", "rebCashDriftBadge", "rebCashSummary");
 	document.getElementById("rebOrderSubTitle").textContent = rt.mode === "inflow" ? `新資金買入模式：將 ${fmtTwd(inflowAmt)} 優先分配給低配資產（零賣出・免交易稅），並依該類別既有非 RSU 持股權重拆單` : `完整再平衡模式：以總資產 ${fmtTwd(m.totalAssets)} 為基準「高賣低買」精準回歸目標佔比（自動排除公司 RSU 股）`;
-	const orderRows = [];
-	for (const cat of [
-		"台股",
-		"美股",
-		"現金"
-	]) {
-		const dCat = catDelta[cat];
-		const candidates = m.holdings.filter((h) => h.category === cat && !h.isRsu && h.key !== "GOOG_UNVESTED");
-		if (candidates.length === 0) {
-			if (Math.abs(dCat) >= 500) {
-				const fallbackTicker = cat === "台股" ? "TPE:0050" : cat === "美股" ? "VT" : null;
-				const refPx = fallbackTicker ? m.benchHelper.getTwdPrice(fallbackTicker, todayIsoStr()) || 0 : 0;
-				orderRows.push({
-					name: fallbackTicker ? `${fallbackTicker} (代表標的)` : `${cat}帳戶`,
-					ticker: fallbackTicker,
-					category: cat,
-					curValTwd: 0,
-					deltaTwd: dCat,
-					isUsd: cat === "美股",
-					marketPrice: cat === "美股" && refPx > 0 ? refPx / m.usdTwd : refPx,
-					afterValTwd: Math.max(0, dCat)
-				});
-			}
-			continue;
-		}
-		const catSubTotal = candidates.reduce((s, h) => s + h.valueTwd, 0);
-		for (const h of candidates) {
-			const itemDelta = dCat * (catSubTotal > 0 ? h.valueTwd / catSubTotal : 1 / candidates.length);
-			orderRows.push({
-				name: h.name,
-				ticker: h.ticker,
-				category: cat,
-				curValTwd: h.valueTwd,
-				deltaTwd: itemDelta,
-				isUsd: h.isUsdPrice,
-				marketPrice: h.marketPrice,
-				afterValTwd: Math.max(0, h.valueTwd + itemDelta)
-			});
-		}
-	}
-	orderRows.sort((a, b) => Math.abs(b.deltaTwd) - Math.abs(a.deltaTwd));
 	const tbody = document.getElementById("rebOrdersTbody");
 	tbody.innerHTML = orderRows.map((row, idx) => {
 		const catCls = row.category === "台股" ? "cat-tw" : row.category === "美股" ? "cat-us" : "cat-cash";
@@ -3562,50 +4210,34 @@ function renderRebalancePage(m) {
 			});
 		});
 	});
+	const levPlan = computeLeveragePlan(m, rt.targetLev);
+	const tLev = levPlan.targetLev;
 	document.getElementById("rebCurLevBadge").textContent = `目前 ${m.effLeverage.toFixed(3)}x`;
-	const tLev = Number(rt.targetLev) || Number(m.effLeverage.toFixed(2)) || 1.15;
 	const levRangeEl = document.getElementById("rebTargetLevRange");
 	const levInputEl = document.getElementById("rebTargetLevInput");
 	if (document.activeElement !== levRangeEl) levRangeEl.value = Math.min(1.6, Math.max(.8, tLev));
 	if (document.activeElement !== levInputEl) levInputEl.value = tLev.toFixed(2);
 	document.querySelectorAll("#rebLevPresetChips .chip").forEach((c) => c.classList.toggle("active", Math.abs(Number(c.dataset.lev) - tLev) < .006));
-	const targetExp = tLev * m.totalAssets;
-	const deltaExp = targetExp - m.totalExposure;
-	const tw1x = m.holdings.find((h) => h.category === "台股" && !h.isLev2x && h.ticker) || m.tickerMap["TPE:0050"];
-	const tw2x = m.holdings.find((h) => h.category === "台股" && h.isLev2x && h.ticker) || m.tickerMap["TPE:00685L"];
-	const us1x = m.holdings.find((h) => h.category === "美股" && !h.isLev2x && !h.isRsu && h.ticker) || m.tickerMap["QQQ"] || m.tickerMap["VT"];
-	const us2x = m.holdings.find((h) => h.category === "美股" && h.isLev2x && h.ticker) || m.tickerMap["QLD"];
 	const levBox = document.getElementById("rebLevPlanBox");
 	const summaryStatsHtml = `
     <div class="preview-card" style="margin-top:0;">
       <div class="preview-row" style="margin-top:0;"><span>目前總曝險市值：</span><b>${fmtTwd(m.totalExposure)} (${m.effLeverage.toFixed(3)}x)</b></div>
-      <div class="preview-row"><span>目標總曝險市值：</span><b>${fmtTwd(targetExp)} (${tLev.toFixed(2)}x)</b></div>
-      <div class="preview-row"><span>需增減曝險差額：</span><b style="color:${Math.abs(deltaExp) < 5e3 ? "var(--pos)" : "var(--accent)"};">${fmtTwd(deltaExp, true)}</b></div>
+      <div class="preview-row"><span>目標總曝險市值：</span><b>${fmtTwd(levPlan.targetExposureTwd)} (${tLev.toFixed(2)}x)</b></div>
+      <div class="preview-row"><span>需增減曝險差額：</span><b style="color:${levPlan.isBalanced ? "var(--pos)" : "var(--accent)"};">${fmtTwd(levPlan.deltaExposureTwd, true)}</b></div>
     </div>
   `;
-	if (Math.abs(deltaExp) < 5e3) levBox.innerHTML = summaryStatsHtml + `
+	if (levPlan.isBalanced) levBox.innerHTML = summaryStatsHtml + `
       <div class="helper-box" style="border-color:var(--pos);">
         <b style="color:var(--pos);">✓ 目前實質槓桿 (${m.effLeverage.toFixed(3)}x) 已精準落在目標區間內</b>，無需進行換股調節！
       </div>
     `;
 	else {
-		const absSwap = Math.abs(deltaExp);
-		const isUp = deltaExp > 0;
-		const tw1Sym = tw1x ? tw1x.ticker || tw1x.name : "TPE:0050";
-		const tw2Sym = tw2x ? tw2x.ticker || tw2x.name : "TPE:00685L";
-		const tw1Px = tw1x && tw1x.marketPrice > 0 ? tw1x.marketPrice : m.benchHelper.getTwdPrice("TPE:0050", todayIsoStr()) || 0;
-		const tw2Px = tw2x && tw2x.marketPrice > 0 ? tw2x.marketPrice : 0;
-		const us1Sym = us1x ? us1x.ticker || us1x.name : "QQQ";
-		const us2Sym = us2x ? us2x.ticker || us2x.name : "QLD";
-		const us1Px = us1x && us1x.marketPrice > 0 ? us1x.marketPrice : 0;
-		const us2Px = us2x && us2x.marketPrice > 0 ? us2x.marketPrice : 0;
-		const swapUsd = absSwap / m.usdTwd;
+		const { absSwapTwd: absSwap, isIncrease: isUp, tw1Sym, tw2Sym, tw1Px, tw2Px, us1Sym, us2Sym, us1Px, us2Px, swapUsd, cur2xTotalTwd: cur2xTotal, minStockLev } = levPlan;
 		const twSh1 = tw1Px > 0 ? `約 ${fmtQty(Math.round(absSwap / tw1Px), " 股")}` : "";
 		const twSh2 = tw2Px > 0 ? `約 ${fmtQty(Math.round(absSwap / tw2Px), " 股")}` : "";
 		const usSh1 = us1Px > 0 ? `約 ${fmtQty(Number((swapUsd / us1Px).toFixed(2)), " 股")}` : "";
 		const usSh2 = us2Px > 0 ? `約 ${fmtQty(Number((swapUsd / us2Px).toFixed(2)), " 股")}` : "";
-		const cur2xTotal = m.holdings.filter((h) => h.isLev2x).reduce((s, h) => s + h.valueTwd, 0);
-		const cashFloorNote = !isUp && absSwap > cur2xTotal ? `<div style="color:var(--warn);font-size:12px;margin-top:4px;">⚠️ 提醒：目前 2 倍槓桿 ETF 總市值為 ${fmtTwd(cur2xTotal)}，全數換回 1 倍原型 ETF 後最低槓桿為 ${((m.twTotal + m.usTotal) / m.totalAssets).toFixed(2)}x；若要再往下降至 ${tLev.toFixed(2)}x，需將部分股票轉為現金存款。</div>` : "";
+		const cashFloorNote = !isUp && absSwap > cur2xTotal ? `<div style="color:var(--warn);font-size:12px;margin-top:4px;">⚠️ 提醒：目前 2 倍槓桿 ETF 總市值為 ${fmtTwd(cur2xTotal)}，全數換回 1 倍原型 ETF 後最低槓桿為 ${minStockLev.toFixed(2)}x；若要再往下降至 ${tLev.toFixed(2)}x，需將部分股票轉為現金存款。</div>` : "";
 		levBox.innerHTML = summaryStatsHtml + `
       <div class="helper-box">
         <div style="font-weight:700;color:var(--accent);">
@@ -3624,346 +4256,6 @@ function renderRebalancePage(m) {
       </div>
     `;
 	}
-}
-var XIRR_BENCH_LIST = [
-	{
-		key: "BLEND_50_50",
-		label: "50% 0050 + 50% VT (台美均衡)",
-		short: "50/50 台美均衡"
-	},
-	{
-		key: "TPE:0050",
-		label: "0050 (元大台灣50)",
-		short: "0050 (台灣50)"
-	},
-	{
-		key: "VT",
-		label: "VT (全球股市 ETF)",
-		short: "VT (全球股市)"
-	},
-	{
-		key: "VOO",
-		label: "VOO (標普500 ETF)",
-		short: "VOO (標普500)"
-	},
-	{
-		key: "QQQ",
-		label: "QQQ (納指100 ETF)",
-		short: "QQQ (納指100)"
-	}
-];
-function simulateShadowBenchmark(events, evalDatesIso, endIso, benchKey, bh) {
-	const evByDay = /* @__PURE__ */ new Map();
-	for (const e of events) {
-		if (!e.iso || !Number.isFinite(e.investTwd)) continue;
-		evByDay.set(e.iso, (evByDay.get(e.iso) || 0) + e.investTwd);
-	}
-	const allIsoSet = /* @__PURE__ */ new Set([
-		...evByDay.keys(),
-		...evalDatesIso,
-		endIso
-	]);
-	const timeline = Array.from(allIsoSet).filter((d) => d && d <= endIso).sort();
-	let shSingle = 0;
-	let sh50 = 0, shVT = 0;
-	const valAtIso = /* @__PURE__ */ new Map();
-	for (const dIso of timeline) {
-		const flow = evByDay.get(dIso) || 0;
-		if (benchKey === "BLEND_50_50") {
-			const px50 = bh.getTwdPrice("TPE:0050", dIso) || 100;
-			const pxVT = bh.getTwdPrice("VT", dIso) || 4e3;
-			if (flow > 0) {
-				sh50 += .5 * flow / px50;
-				shVT += .5 * flow / pxVT;
-			} else if (flow < 0) {
-				const wAmt = -flow;
-				const v50 = sh50 * px50, vVT = shVT * pxVT, vTot = v50 + vVT;
-				if (vTot > .001) {
-					sh50 -= wAmt * (v50 / vTot) / px50;
-					shVT -= wAmt * (vVT / vTot) / pxVT;
-				} else {
-					sh50 -= .5 * wAmt / px50;
-					shVT -= .5 * wAmt / pxVT;
-				}
-			}
-			valAtIso.set(dIso, sh50 * px50 + shVT * pxVT);
-		} else {
-			const px = bh.getTwdPrice(benchKey, dIso) || 100;
-			if (flow !== 0) shSingle += flow / px;
-			valAtIso.set(dIso, shSingle * px);
-		}
-	}
-	const endVal = valAtIso.get(endIso) || 0;
-	const benchCfs = events.map((e) => ({
-		iso: e.iso,
-		amount: -e.investTwd
-	}));
-	benchCfs.push({
-		iso: endIso,
-		amount: endVal
-	});
-	return {
-		endVal,
-		xirrPct: solveXirrPct(benchCfs),
-		valAtIso
-	};
-}
-function computeXirrComparison(m, scope) {
-	const bh = m.benchHelper;
-	let effectiveScope = scope;
-	if (effectiveScope.startsWith("HIST_") && (!m.history || m.history.length < 2)) effectiveScope = "TRADES_ALL";
-	let events = [];
-	let curveBase = [];
-	let startIso = "", endIso = "", portEndVal = 0;
-	let externalFlowCount = 0;
-	if (effectiveScope.startsWith("HIST_")) {
-		const nDays = {
-			HIST_ALL: 99999,
-			HIST_180: 180,
-			HIST_90: 90,
-			HIST_30: 30
-		}[effectiveScope] || 99999;
-		const pts = nDays >= 99999 ? m.history : m.history.slice(-Math.min(m.history.length, nDays));
-		const first = pts[0], last = pts[pts.length - 1];
-		startIso = first.dateIso;
-		endIso = last.dateIso;
-		const initStockVal = first.tw + first.us;
-		portEndVal = last.tw + last.us;
-		events.push({
-			iso: startIso,
-			investTwd: initStockVal
-		});
-		for (const l of m.allTradeLogs) {
-			if (!l.dateIso || l.isPendingQty || l.dateIso <= startIso || l.dateIso > endIso) continue;
-			if (l.kind.includes("股息") || l.kind.includes("股利")) continue;
-			const fx = bh.getFx(l.dateIso);
-			const amtTwd = l.market === "台股" ? l.amtTwd || 0 : (l.amtUsd || 0) * fx;
-			if (amtTwd <= 0) continue;
-			events.push({
-				iso: l.dateIso,
-				investTwd: l.side === "買入" ? amtTwd : -amtTwd
-			});
-			externalFlowCount++;
-		}
-		if (m.rsuVests && m.rsuStockPriceUsd > 0) {
-			for (const v of m.rsuVests) if (v.dateIso > startIso && v.dateIso <= endIso) {
-				const vestValTwd = v.shares * m.rsuStockPriceUsd * bh.getFx(v.dateIso);
-				events.push({
-					iso: v.dateIso,
-					investTwd: vestValTwd
-				});
-				externalFlowCount++;
-			}
-		}
-		curveBase = pts.map((p) => ({
-			label: p.date,
-			iso: p.dateIso,
-			portVal: p.tw + p.us
-		}));
-	} else {
-		const asc = m.allTradeLogs.filter((l) => !l.isPendingQty && l.dateIso && l.adjQty > 0).slice().sort((a, b) => a.dateSort - b.dateSort || (a.side === "買入" ? -1 : 1) || a.sheetRow - b.sheetRow);
-		const loggedQty = {};
-		const snapDates = /* @__PURE__ */ new Set();
-		for (const l of asc) {
-			const sym = l.sym;
-			if (!loggedQty[sym]) loggedQty[sym] = 0;
-			const fx = bh.getFx(l.dateIso);
-			if (l.side === "買入") {
-				loggedQty[sym] += l.adjQty;
-				if (!l.kind.includes("股息") && !l.kind.includes("股利")) {
-					const amt = l.market === "台股" ? l.amtTwd || 0 : (l.amtUsd || 0) * fx;
-					if (amt > 0) {
-						events.push({
-							iso: l.dateIso,
-							investTwd: amt
-						});
-						snapDates.add(l.dateIso);
-						externalFlowCount++;
-					}
-				}
-			} else if (l.side === "賣出") {
-				const avail = Math.max(0, loggedQty[sym]);
-				const matched = Math.min(avail, l.adjQty);
-				loggedQty[sym] = Math.max(0, avail - matched);
-				if (matched > 0) {
-					const matchedProceeds = (l.market === "台股" ? l.amtTwd || 0 : (l.amtUsd || 0) * fx) * (matched / l.adjQty);
-					if (matchedProceeds > 0) {
-						events.push({
-							iso: l.dateIso,
-							investTwd: -matchedProceeds
-						});
-						snapDates.add(l.dateIso);
-						externalFlowCount++;
-					}
-				}
-			}
-		}
-		endIso = todayIsoStr();
-		startIso = events.length ? events[0].iso : endIso;
-		portEndVal = 0;
-		for (const [sym, q] of Object.entries(loggedQty)) {
-			if (q <= 1e-6) continue;
-			const h = m.tickerMap[sym];
-			if (h && h.marketPrice > 0) portEndVal += q * h.marketPrice * (h.isUsdPrice ? m.usdTwd : 1);
-			else {
-				const bPx = bh.getTwdPrice(sym, endIso);
-				if (bPx) portEndVal += q * bPx;
-			}
-		}
-		new Map((m.history || []).map((p) => [p.dateIso, p]));
-		const sampleIsos = Array.from(/* @__PURE__ */ new Set([
-			...snapDates,
-			...(m.history || []).map((p) => p.dateIso),
-			endIso
-		])).filter((d) => d >= startIso && d <= endIso).sort();
-		let cumInv = 0;
-		const evMap = /* @__PURE__ */ new Map();
-		for (const e of events) evMap.set(e.iso, (evMap.get(e.iso) || 0) + e.investTwd);
-		curveBase = sampleIsos.map((dIso, idx) => {
-			cumInv += evMap.get(dIso) || 0;
-			if (dIso === endIso) return {
-				label: dIso.replace(/-/g, "/"),
-				iso: dIso,
-				portVal: portEndVal
-			};
-			const t0 = parseDateLoose(startIso)?.getTime() || 0;
-			const t1 = parseDateLoose(endIso)?.getTime() || 1;
-			const ti = parseDateLoose(dIso)?.getTime() || t0;
-			const prog = t1 > t0 ? (ti - t0) / (t1 - t0) : 1;
-			const totNetInv = events.reduce((s, x) => s + x.investTwd, 0);
-			const totProfit = portEndVal - totNetInv;
-			return {
-				label: dIso.replace(/-/g, "/"),
-				iso: dIso,
-				portVal: Math.max(0, cumInv + totProfit * prog)
-			};
-		});
-	}
-	const netInvestedTwd = events.reduce((s, e) => s + e.investTwd, 0);
-	const netProfitTwd = portEndVal - netInvestedTwd;
-	const simpleReturnPct = netInvestedTwd > 0 ? netProfitTwd / netInvestedTwd * 100 : 0;
-	const portCfs = events.map((e) => ({
-		iso: e.iso,
-		amount: -e.investTwd
-	}));
-	portCfs.push({
-		iso: endIso,
-		amount: portEndVal
-	});
-	const portXirrPct = solveXirrPct(portCfs);
-	const evalDates = curveBase.map((c) => c.iso);
-	const benchResults = {};
-	for (const b of XIRR_BENCH_LIST) {
-		const sim = simulateShadowBenchmark(events, evalDates, endIso, b.key, bh);
-		const bProfit = sim.endVal - netInvestedTwd;
-		const bSimplePct = netInvestedTwd > 0 ? bProfit / netInvestedTwd * 100 : 0;
-		benchResults[b.key] = {
-			...b,
-			endVal: sim.endVal,
-			xirrPct: sim.xirrPct,
-			simplePct: bSimplePct,
-			diffTwd: portEndVal - sim.endVal,
-			alphaPct: portXirrPct !== null && sim.xirrPct !== null ? portXirrPct - sim.xirrPct : null,
-			valAtIso: sim.valAtIso
-		};
-	}
-	return {
-		effectiveScope,
-		startIso,
-		endIso,
-		portEndVal,
-		netInvestedTwd,
-		netProfitTwd,
-		simpleReturnPct,
-		portXirrPct,
-		externalFlowCount,
-		curveBase,
-		benchResults
-	};
-}
-function computePerTickerXirr(m) {
-	const bh = m.benchHelper;
-	const todayIso = todayIsoStr();
-	const bySym = /* @__PURE__ */ new Map();
-	const asc = m.allTradeLogs.filter((l) => !l.isPendingQty && l.dateIso && l.adjQty > 0).slice().sort((a, b) => a.dateSort - b.dateSort || (a.side === "買入" ? -1 : 1) || a.sheetRow - b.sheetRow);
-	for (const l of asc) {
-		if (!bySym.has(l.sym)) bySym.set(l.sym, {
-			sym: l.sym,
-			market: l.market,
-			qty: 0,
-			buyTwd: 0,
-			sellTwd: 0,
-			cfs: []
-		});
-		const rec = bySym.get(l.sym);
-		const fx = bh.getFx(l.dateIso);
-		if (l.side === "買入") {
-			rec.qty += l.adjQty;
-			if (!l.kind.includes("股息") && !l.kind.includes("股利")) {
-				const amt = l.market === "台股" ? l.amtTwd || 0 : (l.amtUsd || 0) * fx;
-				if (amt > 0) {
-					rec.buyTwd += amt;
-					rec.cfs.push({
-						iso: l.dateIso,
-						amount: -amt
-					});
-				}
-			}
-		} else if (l.side === "賣出") {
-			const avail = Math.max(0, rec.qty);
-			const matched = Math.min(avail, l.adjQty);
-			rec.qty = Math.max(0, avail - matched);
-			if (matched > 0) {
-				const proc = (l.market === "台股" ? l.amtTwd || 0 : (l.amtUsd || 0) * fx) * (matched / l.adjQty);
-				if (proc > 0) {
-					rec.sellTwd += proc;
-					rec.cfs.push({
-						iso: l.dateIso,
-						amount: proc
-					});
-				}
-			}
-		}
-	}
-	const rows = [];
-	for (const rec of bySym.values()) {
-		if (rec.buyTwd <= 0) continue;
-		let curValTwd = 0;
-		if (rec.qty > 1e-6) {
-			const h = m.tickerMap[rec.sym];
-			if (h && h.marketPrice > 0) curValTwd = rec.qty * h.marketPrice * (h.isUsdPrice ? m.usdTwd : 1);
-			else {
-				const bPx = bh.getTwdPrice(rec.sym, todayIso);
-				if (bPx) curValTwd = rec.qty * bPx;
-			}
-		}
-		const cfs = rec.cfs.slice();
-		if (curValTwd > 1) cfs.push({
-			iso: todayIso,
-			amount: curValTwd
-		});
-		const totalOut = rec.sellTwd + curValTwd;
-		const pnlTwd = totalOut - rec.buyTwd;
-		const roiPct = rec.buyTwd > 0 ? pnlTwd / rec.buyTwd * 100 : 0;
-		const firstMs = cfs.length ? parseDateLoose(cfs[0].iso)?.getTime() || 0 : 0;
-		const lastMs = cfs.length ? parseDateLoose(cfs[cfs.length - 1].iso)?.getTime() || 0 : 0;
-		const spanDays = firstMs > 0 && lastMs >= firstMs ? Math.max(1, Math.round((lastMs - firstMs) / 864e5)) : 0;
-		const xirr = solveXirrPct(cfs);
-		rows.push({
-			sym: rec.sym,
-			market: rec.market,
-			buyTwd: rec.buyTwd,
-			outTwd: totalOut,
-			pnlTwd,
-			roiPct,
-			spanDays,
-			xirrPct: xirr,
-			sortMetric: spanDays >= 60 && xirr !== null ? xirr : roiPct,
-			isClosed: rec.qty <= 1e-4
-		});
-	}
-	rows.sort((a, b) => (b.sortMetric ?? -999) - (a.sortMetric ?? -999));
-	return rows;
 }
 function renderXirrChart(res, activeBench) {
 	const canvas = document.getElementById("xirrCanvas");
@@ -4195,67 +4487,6 @@ function renderXirrPage(m) {
         `;
 	}).join("") : `<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:18px;">尚無足夠買賣明細可計算個別標的 XIRR</td></tr>`;
 }
-function getAvailableReportMonths(m) {
-	const set = /* @__PURE__ */ new Set();
-	const nowIso = todayIsoStr().slice(0, 7);
-	set.add(nowIso);
-	for (const h of m.history || []) if (h.dateIso) set.add(h.dateIso.slice(0, 7));
-	for (const l of m.allTradeLogs || []) if (l.dateIso && !l.isPendingDca) set.add(l.dateIso.slice(0, 7));
-	return Array.from(set).filter(Boolean).sort().reverse();
-}
-function computeMonthReportStats(m, ym) {
-	const isCurrentMonth = ym === todayIsoStr().slice(0, 7);
-	const monthPts = (m.history || []).filter((p) => p.dateIso && p.dateIso.slice(0, 7) === ym);
-	let prevEndPt = null;
-	for (const p of m.history || []) if (p.dateIso && p.dateIso.slice(0, 7) < ym) prevEndPt = p;
-	const startVal = prevEndPt ? prevEndPt.total : monthPts.length ? monthPts[0].total : m.totalAssets;
-	const endPt = monthPts.length ? monthPts[monthPts.length - 1] : null;
-	const endVal = endPt ? endPt.total : m.totalAssets;
-	const deltaVal = endVal - startVal;
-	const deltaPct = startVal > 0 ? deltaVal / startVal * 100 : 0;
-	const twVal = endPt ? endPt.tw : m.twTotal;
-	const usVal = endPt ? endPt.us : m.usTotal;
-	const cashVal = endPt ? Math.max(0, endPt.total - endPt.tw - endPt.us) : m.cashTotal;
-	let peakUpToYm = endVal;
-	for (const p of m.history || []) if (p.dateIso && p.dateIso.slice(0, 7) <= ym && p.total > peakUpToYm) peakUpToYm = p.total;
-	const ddPct = peakUpToYm > 0 ? (endVal - peakUpToYm) / peakUpToYm * 100 : 0;
-	const trades = m.allTradeLogs.filter((l) => l.dateIso && l.dateIso.slice(0, 7) === ym && !l.isPendingQty).slice().sort((a, b) => a.dateSort - b.dateSort);
-	let twBuy = 0, twSell = 0, usBuyUsd = 0, usSellUsd = 0;
-	for (const t of trades) if (t.market === "台股") {
-		if (t.side === "買入") twBuy += t.amtTwd || 0;
-		else twSell += t.amtTwd || 0;
-	} else if (t.side === "買入") usBuyUsd += t.amtUsd || 0;
-	else usSellUsd += t.amtUsd || 0;
-	const [yNum, mNum] = ym.split("-").map(Number);
-	const nextDate = new Date(yNum, mNum, 1);
-	const nextYm = `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, "0")}`;
-	const nextMonthVests = (m.rsuVests || []).filter((v) => v.dateIso && v.dateIso.slice(0, 7) === nextYm);
-	const xirrSnap = computeXirrComparison(m, "HIST_ALL");
-	const b5050 = xirrSnap.benchResults["BLEND_50_50"];
-	return {
-		ym,
-		nextYm,
-		isCurrentMonth,
-		recordDays: monthPts.length,
-		startVal,
-		endVal,
-		deltaVal,
-		deltaPct,
-		ddPct,
-		twVal,
-		usVal,
-		cashVal,
-		trades,
-		twBuy,
-		twSell,
-		usBuyUsd,
-		usSellUsd,
-		nextMonthVests,
-		portXirrPct: xirrSnap.portXirrPct,
-		bench5050XirrPct: b5050 ? b5050.xirrPct : null,
-		alpha5050Twd: b5050 ? b5050.diffTwd : 0
-	};
-}
 function renderMonthlyReportPage(m) {
 	if (!m) return;
 	const months = getAvailableReportMonths(m);
@@ -4379,16 +4610,7 @@ function renderMonthlyReportPage(m) {
   `;
 }
 function buildPlainTextReportSummary(m, ym) {
-	const st = computeMonthReportStats(m, ym);
-	const safeEnd = Math.max(1, st.endVal);
-	return [
-		`📊 【${st.ym} 個人財務與資產配置月報】`,
-		`• 月末總資產：${fmtTwd(st.endVal)}（單月變化 ${fmtTwd(st.deltaVal, true)} / ${fmtPct(st.deltaPct, true)}）`,
-		`• 風險指標：實質槓桿 ${m.effLeverage.toFixed(3)}x ｜ 距高點回撤 ${st.ddPct.toFixed(2)}%`,
-		`• 資產配置：台股 ${(st.twVal / safeEnd * 100).toFixed(1)}% (${fmtTwd(st.twVal)}) · 美股 ${(st.usVal / safeEnd * 100).toFixed(1)}% (${fmtTwd(st.usVal)}) · 現金 ${(st.cashVal / safeEnd * 100).toFixed(1)}% (${fmtTwd(st.cashVal)})`,
-		`• 真實年化 XIRR：${st.portXirrPct !== null ? fmtPct(st.portXirrPct, true) : "—"}（同現金流 50/50 台美大盤：${st.bench5050XirrPct !== null ? fmtPct(st.bench5050XirrPct, true) : "—"}）`,
-		`• 當月交易：共 ${st.trades.length} 筆（台股買 ${fmtTwd(st.twBuy)} / 賣 ${fmtTwd(st.twSell)}；美股買 ${fmtUsd(st.usBuyUsd)} / 賣 ${fmtUsd(st.usSellUsd)}）`
-	].join("\n");
+	return buildPlainTextReportSummary$1(m, ym, state.hideAmounts);
 }
 function renderRsuAndCashflow(m) {
 	const totalRsu = m.vestedRsu + m.unvestedRsu;
@@ -5301,11 +5523,6 @@ document.querySelectorAll("th[data-sort]").forEach((th) => {
 		if (state.computed) renderRoiAndHoldings(state.computed);
 	});
 });
-function persistRebTargetsLocal() {
-	try {
-		localStorage.setItem("wealth_rebalance_targets_v1", JSON.stringify(state.rebTargets));
-	} catch (_) {}
-}
 document.getElementById("rebPresetChips").addEventListener("click", (e) => {
 	const btn = e.target.closest(".chip");
 	if (!btn || !state.computed) return;
@@ -5765,9 +5982,7 @@ document.getElementById("clearPwaConnBtn").addEventListener("click", () => {
 		apiUrl: "",
 		apiToken: ""
 	});
-	try {
-		localStorage.removeItem("wealth_pwa_snapshot_v1");
-	} catch (_) {}
+	clearPwaSnapshotCache();
 	setPwaPairError("");
 	showToast("已清除此裝置的配對金鑰與本機快取快照");
 	if (getRuntimeMode() === "pwa") applyPayloadToState(buildDemoDashboardPayload(), "🧪 已中斷真實帳本配對，切換回 Demo 互動預覽模式");
@@ -5875,6 +6090,7 @@ body {
 }
 
 .container {
+  width: 100%;
   max-width: 1380px;
   margin: 0 auto;
   padding: 24px 24px 0;
@@ -6215,6 +6431,8 @@ body {
 
 /* ROI & Holdings Table */
 .table-wrap {
+  width: 100%;
+  max-width: 100%;
   overflow-x: auto;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -6717,33 +6935,68 @@ tbody tr:hover { background: var(--card-hover); }
 }
 
 @media (max-width: 768px) {
+  html, body {
+    max-width: 100%;
+    overflow-x: clip;
+  }
   body {
     padding-top: env(safe-area-inset-top, 0px);
     padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px));
     -webkit-tap-highlight-color: transparent;
   }
   .container {
+    width: 100%;
+    max-width: 100%;
     padding: 12px 14px 0;
   }
   .topbar {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     flex-wrap: nowrap;
     gap: 8px;
     margin-bottom: 14px;
     padding-bottom: 12px;
   }
-  .brand { gap: 10px; overflow: hidden; }
-  .brand > div { min-width: 0; overflow: hidden; flex: 1 1 auto; }
-  .brand-icon { width: 36px; height: 36px; font-size: 17px; border-radius: 10px; }
-  .brand h1 { font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .brand {
+    flex: 1 1 0%;
+    width: 0;
+    min-width: 0;
+    max-width: 100%;
+    gap: 8px;
+    overflow: hidden;
+  }
+  .brand > div:not(.brand-icon) {
+    flex: 1 1 0%;
+    width: 0;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+  }
+  .brand .brand-icon {
+    width: 36px;
+    height: 36px;
+    flex: 0 0 36px;
+    font-size: 17px;
+    border-radius: 10px;
+  }
+  .brand h1 {
+    max-width: 100%;
+    font-size: 14.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .brand-sub {
     display: block;
+    max-width: 100%;
     font-size: 11px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .brand-sub .mob-hide-sub { display: none !important; }
-  .actions { gap: 5px; flex-wrap: nowrap; }
+  .actions { gap: 5px; flex-wrap: nowrap; flex-shrink: 0; }
   .actions .btn { padding: 7px 9px; font-size: 13px; border-radius: 9px; }
   .actions .btn-lbl-desk { display: none; }
   #rsuToggleLabel { display: none !important; }
@@ -6802,12 +7055,14 @@ tbody tr:hover { background: var(--card-hover); }
     min-width: 0;
     max-width: 100%;
   }
-  .card { padding: 15px; border-radius: 14px; overflow-x: hidden; }
+  .card { padding: 15px; border-radius: 14px; overflow-x: clip; }
   .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
   .kpi-label { font-size: 11.5px; flex-wrap: wrap; gap: 4px; }
-  .kpi-value { font-size: 20px; margin: 6px 0 4px; }
+  .kpi-value { font-size: clamp(16px, 4.6vw, 20px); margin: 6px 0 4px; overflow-wrap: anywhere; }
   .kpi-foot { font-size: 11px; line-height: 1.4; }
-  .grid-2 { grid-template-columns: 1fr !important; gap: 14px; }
+  .grid-2, .grid-bottom, .reb-grid-3 { grid-template-columns: minmax(0, 1fr) !important; gap: 14px; }
+  .rsu-row { grid-template-columns: 44px minmax(0, 1fr) auto auto; gap: 8px; }
+  .reb-slider-row input[type="range"] { min-width: 0; }
   .pie-wrap { grid-template-columns: 1fr; justify-items: center; }
   .section-head { flex-direction: column; align-items: flex-start; gap: 8px; }
   .section-head > * { min-width: 0; max-width: 100%; }
@@ -6846,8 +7101,16 @@ tbody tr:hover { background: var(--card-hover); }
     text-align: center;
   }
   .table-wrap {
+    display: block;
+    width: 100%;
     max-width: 100%;
+    overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+  }
+  #repMonthSelect, #repEmailInput {
+    min-width: 0 !important;
+    width: 100%;
+    max-width: 100%;
   }
 
   /* Auto-switch wide tables to native-feel mobile cards */

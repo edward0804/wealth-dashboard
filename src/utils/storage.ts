@@ -1,6 +1,7 @@
 export interface StorageLike {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  removeItem?(key: string): void;
 }
 
 export function safeStorageGet(
@@ -40,6 +41,18 @@ export function safeStorageSet(
     store.setItem(key, val);
   } catch {
     // Ignore storage quota or sandbox restrictions cleanly
+  }
+}
+
+export function safeStorageRemove(
+  store: StorageLike | null | undefined,
+  key: string
+): void {
+  try {
+    if (!store || !store.removeItem) return;
+    store.removeItem(key);
+  } catch {
+    // Ignore storage restrictions cleanly
   }
 }
 

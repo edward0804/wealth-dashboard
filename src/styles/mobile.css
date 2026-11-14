@@ -20,33 +20,68 @@
 }
 
 @media (max-width: 768px) {
+  html, body {
+    max-width: 100%;
+    overflow-x: clip;
+  }
   body {
     padding-top: env(safe-area-inset-top, 0px);
     padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px));
     -webkit-tap-highlight-color: transparent;
   }
   .container {
+    width: 100%;
+    max-width: 100%;
     padding: 12px 14px 0;
   }
   .topbar {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     flex-wrap: nowrap;
     gap: 8px;
     margin-bottom: 14px;
     padding-bottom: 12px;
   }
-  .brand { gap: 10px; overflow: hidden; }
-  .brand > div { min-width: 0; overflow: hidden; flex: 1 1 auto; }
-  .brand-icon { width: 36px; height: 36px; font-size: 17px; border-radius: 10px; }
-  .brand h1 { font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .brand {
+    flex: 1 1 0%;
+    width: 0;
+    min-width: 0;
+    max-width: 100%;
+    gap: 8px;
+    overflow: hidden;
+  }
+  .brand > div:not(.brand-icon) {
+    flex: 1 1 0%;
+    width: 0;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+  }
+  .brand .brand-icon {
+    width: 36px;
+    height: 36px;
+    flex: 0 0 36px;
+    font-size: 17px;
+    border-radius: 10px;
+  }
+  .brand h1 {
+    max-width: 100%;
+    font-size: 14.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .brand-sub {
     display: block;
+    max-width: 100%;
     font-size: 11px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .brand-sub .mob-hide-sub { display: none !important; }
-  .actions { gap: 5px; flex-wrap: nowrap; }
+  .actions { gap: 5px; flex-wrap: nowrap; flex-shrink: 0; }
   .actions .btn { padding: 7px 9px; font-size: 13px; border-radius: 9px; }
   .actions .btn-lbl-desk { display: none; }
   #rsuToggleLabel { display: none !important; }
@@ -105,12 +140,14 @@
     min-width: 0;
     max-width: 100%;
   }
-  .card { padding: 15px; border-radius: 14px; overflow-x: hidden; }
+  .card { padding: 15px; border-radius: 14px; overflow-x: clip; }
   .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
   .kpi-label { font-size: 11.5px; flex-wrap: wrap; gap: 4px; }
-  .kpi-value { font-size: 20px; margin: 6px 0 4px; }
+  .kpi-value { font-size: clamp(16px, 4.6vw, 20px); margin: 6px 0 4px; overflow-wrap: anywhere; }
   .kpi-foot { font-size: 11px; line-height: 1.4; }
-  .grid-2 { grid-template-columns: 1fr !important; gap: 14px; }
+  .grid-2, .grid-bottom, .reb-grid-3 { grid-template-columns: minmax(0, 1fr) !important; gap: 14px; }
+  .rsu-row { grid-template-columns: 44px minmax(0, 1fr) auto auto; gap: 8px; }
+  .reb-slider-row input[type="range"] { min-width: 0; }
   .pie-wrap { grid-template-columns: 1fr; justify-items: center; }
   .section-head { flex-direction: column; align-items: flex-start; gap: 8px; }
   .section-head > * { min-width: 0; max-width: 100%; }
@@ -149,8 +186,16 @@
     text-align: center;
   }
   .table-wrap {
+    display: block;
+    width: 100%;
     max-width: 100%;
+    overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+  }
+  #repMonthSelect, #repEmailInput {
+    min-width: 0 !important;
+    width: 100%;
+    max-width: 100%;
   }
 
   /* Auto-switch wide tables to native-feel mobile cards */
