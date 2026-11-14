@@ -18,6 +18,17 @@ const SHEET_NAMES = [
   "_大盤基準快取"
 ];
 
+const SHEET_ROLE_ALIASES = {
+  salary: ["每月薪資明細", "薪資明細", "Salary"],
+  alloc: ["每月收入分配", "收入分配", "Allocation"],
+  twTrades: ["台股交易明細", "台股明細", "TW Trades", "TW_Trades"],
+  usTrades: ["美股交易明細", "美股明細", "US Trades", "US_Trades"],
+  rsu: ["公司股票明細", "RSU明細", "RSU", "Equity"],
+  overview: ["整體財務狀況", "資產總覽", "Overview", "Portfolio"],
+  history: ["歷史紀錄", "淨值歷史", "History", "NetWorthHistory"],
+  benchmark: ["_大盤基準快取", "BenchmarkCache"]
+};
+
 const SUMMARY_ROW_TITLES = {
   "現金部位資產": true,
   "台股部位資產": true,
@@ -26,11 +37,172 @@ const SUMMARY_ROW_TITLES = {
   "資產槓桿比": true
 };
 
+function normalizeHeaderText_(val) {
+  return String(val || "").replace(/\s+/g, "").toLowerCase();
+}
+
+function colIdxToLetter_(idx) {
+  let n = Number(idx);
+  if (!isFinite(n) || n < 0) return "A";
+  let s = "";
+  while (n >= 0) {
+    s = String.fromCharCode((n % 26) + 65) + s;
+    n = Math.floor(n / 26) - 1;
+  }
+  return s;
+}
+
+function resolveHeaderMap_(headerRow, specs) {
+  const raw = Array.isArray(headerRow) ? headerRow : [];
+  const norm = raw.map(normalizeHeaderText_);
+  const map = {};
+  const usedCols = {};
+
+  // Pass 1: exact normalized match
+  for (let sIdx = 0; sIdx < specs.length; sIdx++) {
+    const sp = specs[sIdx];
+    for (let c = 0; c < norm.length; c++) {
+      if (usedCols[c] || !norm[c]) continue;
+      const aliases = sp.aliases || [];
+      let matched = false;
+      for (let a = 0; a < aliases.length; a++) {
+        if (norm[c] === normalizeHeaderText_(aliases[a])) {
+          matched = true;
+          break;
+        }
+      }
+      if (matched) {
+        map[sp.key] = c;
+        usedCols[c] = true;
+        break;
+      }
+    }
+  }
+
+  // Pass 2: substring match on unassigned columns while honoring antiAliases
+  for (let sIdx = 0; sIdx < specs.length; sIdx++) {
+    const sp = specs[sIdx];
+    if (map[sp.key] !== undefined) continue;
+    const aliases = sp.aliases || [];
+    const anti = sp.antiAliases || [];
+    for (let c = 0; c < norm.length; c++) {
+      if (usedCols[c] || !norm[c]) continue;
+      let blocked = false;
+      for (let k = 0; k < anti.length; k++) {
+        if (norm[c].indexOf(normalizeHeaderText_(anti[k])) >= 0) {
+          blocked = true;
+          break;
+        }
+      }
+      if (blocked) continue;
+      let matched = false;
+      for (let a = 0; a < aliases.length; a++) {
+        const na = normalizeHeaderText_(aliases[a]);
+        if (na && norm[c].indexOf(na) >= 0) {
+          matched = true;
+          break;
+        }
+      }
+      if (matched) {
+        map[sp.key] = c;
+        usedCols[c] = true;
+        break;
+      }
+    }
+  }
+
+  // Pass 3: deterministic fallbacks for headers missing or unrecognized
+  for (let sIdx = 0; sIdx < specs.length; sIdx++) {
+    const sp = specs[sIdx];
+    if (map[sp.key] === undefined) {
+      map[sp.key] = sp.fallback;
+    }
+  }
+  return map;
+}
+
+const OVERVIEW_HEADER_SPECS_ = [
+  { key: "initQty", aliases: ["期初未記錄股數", "期初股數", "期初數量", "Initial Shares"], antiAliases: [], fallback: 6 },
+  { key: "initCost", aliases: ["期初成本均價", "期初均價", "期初成本", "Initial Cost", "Avg Cost"], antiAliases: [], fallback: 7 },
+  { key: "name", aliases: ["資產項目", "項目", "名稱", "Asset", "Holding", "Name"], antiAliases: [], fallback: 0 },
+  { key: "qty", aliases: ["持有股數", "股數", "數量", "Shares", "Qty", "Quantity"], antiAliases: ["期初", "initial"], fallback: 1 },
+  { key: "unitPrice", aliases: ["目前股價", "現價", "股價", "市價", "單價", "Price", "Market Price"], antiAliases: ["期初", "initial", "均價"], fallback: 2 },
+  { key: "valueTwd", aliases: ["台幣現值", "總值", "市值", "現值", "資產總額", "Value", "Market Value"], antiAliases: ["期初"], fallback: 3 },
+  { key: "weightPct", aliases: ["佔比", "占比", "比重", "權重", "Weight"], antiAliases: [], fallback: 4 },
+  { key: "note", aliases: ["備註", "說明", "Note", "Memo"], antiAliases: [], fallback: 5 }
+];
+
+const TW_TRADE_HEADER_SPECS_ = [
+  { key: "date", aliases: ["日期", "交易日期", "成交日期", "Date"], antiAliases: [], fallback: 0 },
+  { key: "side", aliases: ["買賣別", "方向", "買賣", "買/賣", "動作", "Side", "Action"], antiAliases: [], fallback: 1 },
+  { key: "kind", aliases: ["交易性質", "類別", "性質", "類型", "Type", "Kind"], antiAliases: [], fallback: 2 },
+  { key: "ticker", aliases: ["股票代碼", "股票代號", "代碼", "代號", "標的", "Ticker", "Symbol"], antiAliases: [], fallback: 3 },
+  { key: "amount", aliases: ["金額", "總額", "交割金額", "總金額", "扣款金額", "Amount", "Total"], antiAliases: [], fallback: 4 },
+  { key: "price", aliases: ["成交股價", "成交價", "股價", "買入價", "價格", "單價", "Price"], antiAliases: [], fallback: 5 },
+  { key: "shares", aliases: ["股數", "成交股數", "數量", "Shares", "Qty"], antiAliases: [], fallback: 6 },
+  { key: "fee", aliases: ["手續費", "費用", "Fee"], antiAliases: [], fallback: 7 },
+  { key: "note", aliases: ["備註", "說明", "Note", "Memo"], antiAliases: [], fallback: 8 }
+];
+
+const US_TRADE_HEADER_SPECS_ = [
+  { key: "date", aliases: ["日期", "交易日期", "成交日期", "Date"], antiAliases: [], fallback: 0 },
+  { key: "side", aliases: ["買賣別", "方向", "買賣", "買/賣", "動作", "Side", "Action"], antiAliases: [], fallback: 1 },
+  { key: "kind", aliases: ["交易性質", "類別", "性質", "類型", "Type", "Kind"], antiAliases: [], fallback: 2 },
+  { key: "ticker", aliases: ["股票代碼", "股票代號", "代碼", "代號", "標的", "Ticker", "Symbol"], antiAliases: [], fallback: 3 },
+  { key: "amount", aliases: ["金額(USD)", "金額", "總額", "Amount", "Total"], antiAliases: [], fallback: 4 },
+  { key: "price", aliases: ["成交股價(USD)", "成交股價", "股價", "價格", "單價", "Price"], antiAliases: [], fallback: 5 },
+  { key: "shares", aliases: ["股數", "數量", "Shares", "Qty"], antiAliases: [], fallback: 6 },
+  { key: "note", aliases: ["備註", "說明", "Note", "Memo"], antiAliases: [], fallback: -1 }
+];
+
+const HISTORY_HEADER_SPECS_ = [
+  { key: "date", aliases: ["日期", "Date"], antiAliases: [], fallback: 0 },
+  { key: "tw", aliases: ["台股部位", "台股", "TW"], antiAliases: [], fallback: 1 },
+  { key: "us", aliases: ["美股部位", "美股", "US"], antiAliases: [], fallback: 2 },
+  { key: "total", aliases: ["總資產", "總淨值", "淨值", "當前總資產", "Total"], antiAliases: [], fallback: 3 }
+];
+
+const RSU_HEADER_SPECS_ = [
+  { key: "date", aliases: ["歸屬日期", "歸屬日", "日期", "Vest Date", "Date"], antiAliases: [], fallback: 0 },
+  { key: "ticker", aliases: ["股票代碼", "標的", "代碼", "Ticker", "Symbol"], antiAliases: [], fallback: 1 },
+  { key: "shares", aliases: ["股數", "數量", "歸屬股數", "Shares", "Qty"], antiAliases: [], fallback: 2 },
+  { key: "status", aliases: ["狀態", "歸屬狀態", "Status"], antiAliases: [], fallback: 3 }
+];
+
+function getSheetHeaderRow_(sh, maxScanCols) {
+  if (!sh || sh.getLastRow() < 1) return [];
+  const lastC = typeof sh.getLastColumn === "function" ? Math.max(1, sh.getLastColumn()) : (maxScanCols || 12);
+  const scanC = Math.min(26, Math.max(maxScanCols || 9, lastC));
+  const rowVals = sh.getRange(1, 1, 1, scanC).getDisplayValues();
+  return (rowVals && rowVals[0]) ? rowVals[0] : [];
+}
+
+function resolveSheetByRole_(ss, roleKey) {
+  const aliases = SHEET_ROLE_ALIASES[roleKey] || [];
+  for (let i = 0; i < aliases.length; i++) {
+    const s = ss.getSheetByName(aliases[i]);
+    if (s) return s;
+  }
+  if (typeof ss.getSheets === "function") {
+    const all = ss.getSheets() || [];
+    for (let a = 0; a < aliases.length; a++) {
+      const target = normalizeHeaderText_(aliases[a]);
+      for (let i = 0; i < all.length; i++) {
+        if (normalizeHeaderText_(all[i].getName()) === target) return all[i];
+      }
+    }
+  }
+  return null;
+}
+
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("📊 財務儀表板")
     .addItem("開啟互動式資產儀表板", "openDashboardModal")
     .addItem("📱 取得 / 重設 iPhone App 專屬配對碼", "openPwaPairingDialog")
+    .addSeparator()
+    .addItem("🚀 一鍵初始化標準帳本結構", "initializeStandardWorkbook")
+    .addItem("⏰ 開啟 / 關閉每日淨值紀錄排程", "toggleDailyHistoryTrigger")
     .addSeparator()
     .addItem("立即寄送本月財務月報預覽信", "sendQuickReportFromMenu")
     .addToUi();
@@ -97,29 +269,89 @@ function jsonOutput_(obj) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
+function normalizeAppsScriptExecUrl_(urlStr) {
+  const u = String(urlStr || "").trim();
+  if (!u) return "";
+  return u.replace(/^(https:\/\/script\.google\.com\/macros)\/u\/\d+\/(s\/)/, "$1/$2");
+}
+
+function isValidAppsScriptExecUrl_(urlStr) {
+  const u = normalizeAppsScriptExecUrl_(urlStr);
+  return /^https:\/\/script\.google\.com\/.*\/exec(?:\?.*)?$/.test(u);
+}
+
+function resolvePreferredExecUrl_(confirmedUrl, _rawSvcUrl) {
+  const c = normalizeAppsScriptExecUrl_(confirmedUrl);
+  return isValidAppsScriptExecUrl_(c) ? c : "";
+}
+
+function sp_getConfirmedExecUrl_() {
+  return normalizeAppsScriptExecUrl_(
+    PropertiesService.getScriptProperties().getProperty("CONFIRMED_EXEC_URL") || ""
+  );
+}
+
 function sp_getSavedExecUrl_() {
-  return PropertiesService.getScriptProperties().getProperty("SAVED_EXEC_URL") || "";
+  const sp = PropertiesService.getScriptProperties();
+  return normalizeAppsScriptExecUrl_(
+    sp.getProperty("CONFIRMED_EXEC_URL") || sp.getProperty("SAVED_EXEC_URL") || ""
+  );
 }
 
 function saveExecUrlFromMenu(urlStr) {
   if (!SpreadsheetApp.getActiveSpreadsheet()) return;
-  const u = String(urlStr || "").trim();
-  if (u.slice(-5) === "/exec") {
-    PropertiesService.getScriptProperties().setProperty("SAVED_EXEC_URL", u);
+  const u = normalizeAppsScriptExecUrl_(urlStr);
+  if (isValidAppsScriptExecUrl_(u)) {
+    const sp = PropertiesService.getScriptProperties();
+    sp.setProperty("CONFIRMED_EXEC_URL", u);
+    sp.setProperty("SAVED_EXEC_URL", u);
   }
+}
+
+function clearSavedExecUrlFromMenu() {
+  if (!SpreadsheetApp.getActiveSpreadsheet()) return;
+  const sp = PropertiesService.getScriptProperties();
+  sp.deleteProperty("CONFIRMED_EXEC_URL");
+  sp.deleteProperty("SAVED_EXEC_URL");
 }
 
 function openPwaPairingDialog() {
   getTargetSpreadsheet_();
   const token = getOrCreatePwaToken_(false);
-  let detectedUrl = sp_getSavedExecUrl_();
+  const sp = PropertiesService.getScriptProperties();
+  const confirmedUrl = sp_getConfirmedExecUrl_();
+  const legacySavedUrl = normalizeAppsScriptExecUrl_(sp.getProperty("SAVED_EXEC_URL") || "");
+  let rawSvcUrl = "";
   try {
-    const rawSvcUrl = ScriptApp.getService().getUrl() || "";
-    if (rawSvcUrl.slice(-5) === "/exec") {
-      detectedUrl = rawSvcUrl;
-      PropertiesService.getScriptProperties().setProperty("SAVED_EXEC_URL", rawSvcUrl);
-    }
+    rawSvcUrl = normalizeAppsScriptExecUrl_(ScriptApp.getService().getUrl() || "");
   } catch (_) {}
+
+  // Never pre-fill or persist unverified ScriptApp.getService().getUrl() / legacy SAVED_EXEC_URL blindly;
+  // it can point to a dead HTTP 404 deployment when multiple deployments exist.
+  const detectedUrl = resolvePreferredExecUrl_(confirmedUrl, rawSvcUrl);
+  const probeCandidates = [];
+  if (!detectedUrl) {
+    if (isValidAppsScriptExecUrl_(legacySavedUrl) && probeCandidates.indexOf(legacySavedUrl) === -1) {
+      probeCandidates.push(legacySavedUrl);
+    }
+    if (isValidAppsScriptExecUrl_(rawSvcUrl) && probeCandidates.indexOf(rawSvcUrl) === -1) {
+      probeCandidates.push(rawSvcUrl);
+    }
+  }
+
+  let execMismatchHint = "";
+  if (
+    detectedUrl &&
+    isValidAppsScriptExecUrl_(rawSvcUrl) &&
+    detectedUrl !== rawSvcUrl
+  ) {
+    execMismatchHint =
+      "<div style='margin-top:6px;padding:7px 9px;border-radius:7px;background:#fefce8;border:1px solid #fde047;color:#854d0e;font-size:11.5px;line-height:1.5;'>" +
+      "⚠️ 偵測到專案內含多筆歷史部署：Google 系統回傳（..." + escapeHtml_(rawSvcUrl.slice(-18)) +
+      "），已優先鎖定您確認過的網址（..." + escapeHtml_(detectedUrl.slice(-18)) +
+      "），不會被覆蓋。" +
+      "</div>";
+  }
 
   const dialogHtml =
     "<div style='font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;padding:6px 4px;color:#0f172a;line-height:1.6;'>" +
@@ -131,8 +363,13 @@ function openPwaPairingDialog() {
         "<span style='color:#0369a1;'>🔒 安全性保護已自動啟動：系統已產生下方 256-bit 私密金鑰，任何沒有此配對碼的人就算知道網址也完全無法讀取或修改任何一格資料！</span>" +
       "</div>" +
       "<div style='margin-bottom:10px;'>" +
-        "<label style='font-size:12.5px;font-weight:700;display:block;margin-bottom:4px;'>1. 貼上「部署 → 管理部署作業」的網頁應用程式網址（結尾必須為 /exec）：</label>" +
-        "<input id='execUrlInp' type='text' value='" + escapeHtml_(detectedUrl) + "' placeholder='貼上 https://script.google.com/macros/s/.../exec' style='width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;' oninput='rebuildCode()' />" +
+        "<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;'>" +
+          "<label style='font-size:12.5px;font-weight:700;'>1. 「部署 → 管理部署作業」的網頁應用程式網址（結尾必須為 /exec）：</label>" +
+          "<button type='button' onclick='clearSavedUrl()' style='font-size:11.5px;padding:2px 8px;border-radius:6px;border:1px solid #cbd5e1;background:#fff;color:#475569;cursor:pointer;'>🧹 清除重填</button>" +
+        "</div>" +
+        "<input id='execUrlInp' type='text' value='" + escapeHtml_(detectedUrl) + "' placeholder='請從「部署 → 管理部署作業」複製 https://script.google.com/macros/s/.../exec 貼上' style='width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid #cbd5e1;border-radius:8px;font-size:13px;' oninput='rebuildCode()' />" +
+        "<div id='probeStatusBox' style='margin-top:6px;font-size:12px;line-height:1.5;'></div>" +
+        execMismatchHint +
       "</div>" +
       "<div style='margin-bottom:12px;'>" +
         "<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;'>" +
@@ -148,14 +385,85 @@ function openPwaPairingDialog() {
       "</div>" +
     "</div>" +
     "<script>" +
+      "var lastSavedExec=" + JSON.stringify(detectedUrl).replace(/</g, "\\u003c") + ";" +
+      "var probeCandidates=" + JSON.stringify(probeCandidates).replace(/</g, "\\u003c") + ";" +
+      "var probeSeq=0;" +
+      "function normExec(s){" +
+        "return String(s||'').trim().replace(/^(https:\\/\\/script\\.google\\.com\\/macros)\\/u\\/\\d+\\/(s\\/)/,'$1/$2');" +
+      "}" +
+      "function isValidExec(s){" +
+        "return /^https:\\/\\/script\\.google\\.com\\/.*\\/exec(?:\\?.*)?$/.test(normExec(s));" +
+      "}" +
+      "function setProbeStatus(html,bg,bd,col){" +
+        "var el=document.getElementById('probeStatusBox');" +
+        "if(!el)return;" +
+        "if(!html){el.innerHTML='';el.style.display='none';return;}" +
+        "el.style.display='block';el.style.padding='7px 9px';el.style.borderRadius='7px';" +
+        "el.style.background=bg||'#f8fafc';el.style.border='1px solid '+(bd||'#cbd5e1');el.style.color=col||'#334155';" +
+        "el.innerHTML=html;" +
+      "}" +
+      "function escH(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}" +
+      "function testExecEndpoint(u){" +
+        "if(typeof fetch!=='function')return Promise.resolve({ok:false,reason:'unsupported'});" +
+        "return fetch(u,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'getPortfolioPayload',token:''})})" +
+          ".then(function(res){if(!res.ok)throw new Error('HTTP '+res.status);return res.json();})" +
+          ".then(function(d){if(d&&typeof d==='object'&&(d.ok===true||d.unauthorized===true))return{ok:true};throw new Error('unexpected response');})" +
+          ".catch(function(err){return{ok:false,reason:(err&&err.message)?err.message:'Load failed'};});" +
+      "}" +
+      "function probeActiveInput(u){" +
+        "var seq=++probeSeq;" +
+        "if(!isValidExec(u)){setProbeStatus('');return;}" +
+        "setProbeStatus('⏳ 正在測試此 /exec 網址是否可跨網域連線...','#f8fafc','#cbd5e1','#475569');" +
+        "testExecEndpoint(u).then(function(r){" +
+          "if(seq!==probeSeq)return;" +
+          "if(r.ok){" +
+            "setProbeStatus('✅ 跨網域連線正常（網址有效且權限已設為「所有人」）','#f0fdf4','#86efac','#166534');" +
+          "}else{" +
+            "setProbeStatus('⚠️ 此網址目前無法跨網域連線（'+escH(r.reason)+'）：若這是 Google 自動帶入的舊／失效部署，或權限未選「所有人 (Anyone)」，請到 Apps Script「部署 → 管理部署作業」複製最新的 /exec 網址貼上取代。','#fef2f2','#fca5a5','#991b1b');" +
+          "}" +
+        "});" +
+      "}" +
+      "function probeCandidatesOnOpen(){" +
+        "if(lastSavedExec||!probeCandidates.length)return;" +
+        "var idx=0;" +
+        "function next(){" +
+          "if(document.getElementById('execUrlInp').value.trim())return;" +
+          "if(idx>=probeCandidates.length){" +
+            "var badList=probeCandidates.map(function(c){return '...'+escH(c.slice(-18));}).join('、');" +
+            "setProbeStatus('⚠️ 系統已自動略過無法連線的預設／舊存網址（'+badList+'）：請從 Apps Script「部署 → 管理部署作業」複製目前設為「所有人」的最新 /exec 網址貼到上方第 1 欄（貼上一次後即永久記住）。','#fefce8','#fde047','#854d0e');" +
+            "return;" +
+          "}" +
+          "var cand=probeCandidates[idx++];" +
+          "setProbeStatus('⏳ 正在檢查先前的部署網址（...'+escH(cand.slice(-18))+'）是否仍有效...','#f8fafc','#cbd5e1','#475569');" +
+          "testExecEndpoint(cand).then(function(r){" +
+            "if(document.getElementById('execUrlInp').value.trim())return;" +
+            "if(r.ok){" +
+              "document.getElementById('execUrlInp').value=cand;" +
+              "rebuildCode();" +
+            "}else{next();}" +
+          "});" +
+        "}" +
+        "next();" +
+      "}" +
       "function rebuildCode(){" +
-        "var u=document.getElementById('execUrlInp').value.trim();" +
+        "var inp=document.getElementById('execUrlInp');" +
+        "var u=normExec(inp.value);" +
+        "if(u&&u!==inp.value.trim())inp.value=u;" +
         "var t=document.getElementById('tokInp').value.trim();" +
-        "if(!u){document.getElementById('pairCodeBox').value='請先從 Apps Script「部署 → 管理部署作業」複製結尾為 /exec 的網址貼到上方第 1 欄';return;}" +
-        "if(u.slice(-4)==='/dev'){document.getElementById('pairCodeBox').value='⚠️ 上方網址結尾是 /dev（測試網址，手機無法連線）！請改貼「部署 → 管理部署作業」中結尾為 /exec 的正式網址';return;}" +
-        "if(u.slice(-5)==='/exec'){google.script.run.saveExecUrlFromMenu(u);}" +
+        "if(!u){document.getElementById('pairCodeBox').value='請先從 Apps Script「部署 → 管理部署作業」複製結尾為 /exec 的網址貼到上方第 1 欄';setProbeStatus('');return;}" +
+        "if(u.slice(-4)==='/dev'){document.getElementById('pairCodeBox').value='⚠️ 上方網址結尾是 /dev（測試網址，手機無法連線）！請改貼「部署 → 管理部署作業」中結尾為 /exec 的正式網址';setProbeStatus('');return;}" +
+        "if(isValidExec(u)&&u!==lastSavedExec){lastSavedExec=u;google.script.run.saveExecUrlFromMenu(u);}" +
         "var raw=JSON.stringify({u:u,t:t});" +
         "document.getElementById('pairCodeBox').value='WDB1:'+btoa(unescape(encodeURIComponent(raw)));" +
+        "if(isValidExec(u))probeActiveInput(u);" +
+      "}" +
+      "function clearSavedUrl(){" +
+        "probeSeq++;" +
+        "lastSavedExec='';" +
+        "document.getElementById('execUrlInp').value='';" +
+        "google.script.run.clearSavedExecUrlFromMenu();" +
+        "rebuildCode();" +
+        "setProbeStatus('ℹ️ 已清除記住的網址。請從「部署 → 管理部署作業」複製最新 /exec 網址貼到上方第 1 欄。','#f8fafc','#cbd5e1','#475569');" +
       "}" +
       "function markCopied(){" +
         "var b=document.getElementById('copyBtn');" +
@@ -180,9 +488,10 @@ function openPwaPairingDialog() {
         "google.script.run.withSuccessHandler(function(r){document.getElementById('tokInp').value=r.token;rebuildCode();}).resetPwaTokenFromSheetMenu();" +
       "}" +
       "rebuildCode();" +
+      "probeCandidatesOnOpen();" +
     "</script>";
 
-  const out = HtmlService.createHtmlOutput(dialogHtml).setWidth(560).setHeight(510);
+  const out = HtmlService.createHtmlOutput(dialogHtml).setWidth(580).setHeight(540);
   SpreadsheetApp.getUi().showModalDialog(out, "📱 iPhone 全螢幕 App 專屬配對碼");
 }
 
@@ -246,12 +555,6 @@ function openDashboardModal() {
 }
 
 function doGet() {
-  try {
-    const curUrl = ScriptApp.getService().getUrl() || "";
-    if (curUrl.slice(-5) === "/exec") {
-      PropertiesService.getScriptProperties().setProperty("SAVED_EXEC_URL", curUrl);
-    }
-  } catch (_) {}
   return HtmlService.createHtmlOutputFromFile("Index")
     .setTitle("Duby Wealth Dashboard")
     .addMetaTag("viewport", "width=device-width, initial-scale=1")
@@ -259,7 +562,7 @@ function doGet() {
 }
 
 function ensureBenchmarkCacheSheet_(ss) {
-  let sh = ss.getSheetByName("_大盤基準快取");
+  let sh = resolveSheetByRole_(ss, "benchmark") || ss.getSheetByName("_大盤基準快取");
   if (sh) return sh;
   try {
     sh = ss.insertSheet("_大盤基準快取");
@@ -282,44 +585,74 @@ function ensureBenchmarkCacheSheet_(ss) {
   return sh;
 }
 
-function findNextAppendRow_(sh) {
+function findNextAppendRow_(sh, dateColIdx) {
   const maxR = Math.max(1, sh.getLastRow());
-  const colA = sh.getRange(1, 1, maxR, 1).getDisplayValues();
-  for (let i = colA.length - 1; i >= 0; i--) {
-    if (String(colA[i][0] || "").trim() !== "") {
+  const targetCol = (typeof dateColIdx === "number" && dateColIdx >= 0) ? (dateColIdx + 1) : 1;
+  const colVals = sh.getRange(1, targetCol, maxR, 1).getDisplayValues();
+  for (let i = colVals.length - 1; i >= 0; i--) {
+    if (String(colVals[i][0] || "").trim() !== "") {
       return i + 2;
     }
   }
   return 2;
 }
 
-function extractRowTicker_(formulaRow) {
-  if (!formulaRow || !formulaRow[0]) return null;
-  const title = String(formulaRow[0]).trim();
+function writeRowByColMap_(sh, rowNum, pairs) {
+  const valid = pairs.filter(function (p) {
+    return p && p.colIdx >= 0 && p.value !== undefined;
+  });
+  if (!valid.length) return;
+  valid.sort(function (a, b) { return a.colIdx - b.colIdx; });
+  let contiguous = valid[0].colIdx === 0;
+  for (let i = 0; i < valid.length; i++) {
+    if (valid[i].colIdx !== i) {
+      contiguous = false;
+      break;
+    }
+  }
+  if (contiguous) {
+    sh.getRange(rowNum, 1, 1, valid.length).setValues([
+      valid.map(function (p) { return p.value; })
+    ]);
+    return;
+  }
+  valid.forEach(function (p) {
+    sh.getRange(rowNum, p.colIdx + 1).setValue(p.value);
+  });
+}
+
+function extractRowTicker_(formulaRow, ovMap) {
+  const nameIdx = ovMap ? ovMap.name : 0;
+  const qtyIdx = ovMap ? ovMap.qty : 1;
+  const priceIdx = ovMap ? ovMap.unitPrice : 2;
+  if (!formulaRow || !formulaRow[nameIdx]) return null;
+  const title = String(formulaRow[nameIdx]).trim();
   if (SUMMARY_ROW_TITLES[title]) return null;
 
-  const colC = formulaRow[2] ? String(formulaRow[2]).trim() : "";
-  const m = colC.match(/GOOGLEFINANCE\(\s*"([^"]+)"/i);
+  const colPrice = formulaRow[priceIdx] ? String(formulaRow[priceIdx]).trim() : "";
+  const m = colPrice.match(/GOOGLEFINANCE\(\s*"([^"]+)"/i);
   if (m && m[1].toUpperCase().indexOf("CURRENCY:") !== 0) {
     return m[1].trim().toUpperCase();
   }
 
-  const colB = formulaRow[1] ? String(formulaRow[1]).trim() : "";
-  const mb = colB.match(/\$D:\$D\s*,\s*"([^"]+)"/i);
+  const colQty = formulaRow[qtyIdx] ? String(formulaRow[qtyIdx]).trim() : "";
+  const mb = colQty.match(/\$[A-Z]+:\$[A-Z]+\s*,\s*"([^"]+)"/i);
   if (mb) return mb[1].trim().toUpperCase();
 
   return null;
 }
 
 function getOverviewFormulas_(ss) {
-  const ov = ss.getSheetByName("整體財務狀況");
+  const ov = resolveSheetByRole_(ss, "overview");
   if (!ov) return [];
   const lastR = Math.min(200, Math.max(25, ov.getLastRow()));
-  const disp = ov.getRange(1, 1, lastR, 8).getDisplayValues();
-  const forms = ov.getRange(1, 1, lastR, 8).getFormulas();
+  const lastC = typeof ov.getLastColumn === "function" ? Math.max(8, ov.getLastColumn()) : 8;
+  const scanC = Math.min(26, lastC);
+  const disp = ov.getRange(1, 1, lastR, scanC).getDisplayValues();
+  const forms = ov.getRange(1, 1, lastR, scanC).getFormulas();
   return disp.map(function (row, rIdx) {
     return row.map(function (cellVal, cIdx) {
-      return forms[rIdx][cIdx] ? forms[rIdx][cIdx] : cellVal;
+      return (forms[rIdx] && forms[rIdx][cIdx]) ? forms[rIdx][cIdx] : cellVal;
     });
   });
 }
@@ -346,15 +679,27 @@ function getPortfolioPayload(clientToken) {
   const ss = getTargetSpreadsheet_();
   ensureBenchmarkCacheSheet_(ss);
   const sheets = {};
+  const roleKeys = [
+    ["每月薪資明細", "salary"],
+    ["每月收入分配", "alloc"],
+    ["台股交易明細", "twTrades"],
+    ["美股交易明細", "usTrades"],
+    ["公司股票明細", "rsu"],
+    ["整體財務狀況", "overview"],
+    ["歷史紀錄", "history"],
+    ["_大盤基準快取", "benchmark"]
+  ];
 
-  SHEET_NAMES.forEach(function (name) {
-    const sh = ss.getSheetByName(name);
+  roleKeys.forEach(function (pair) {
+    const canonicalName = pair[0];
+    const roleKey = pair[1];
+    const sh = resolveSheetByRole_(ss, roleKey) || ss.getSheetByName(canonicalName);
     if (!sh) {
-      sheets[name] = [];
+      sheets[canonicalName] = [];
       return;
     }
     const vals = sh.getDataRange().getDisplayValues();
-    sheets[name] = vals.map(function (row) {
+    sheets[canonicalName] = vals.map(function (row) {
       const copy = row.slice();
       while (copy.length > 0 && copy[copy.length - 1] === "") copy.pop();
       return copy;
@@ -367,6 +712,7 @@ function getPortfolioPayload(clientToken) {
   const savedReb = sp.getProperty("wealth_rebalance_targets_v1") || up.getProperty("wealth_rebalance_targets_v1");
 
   return {
+    schemaVersion: 2,
     spreadsheetTitle: ss.getName(),
     spreadsheetUrl: ss.getUrl(),
     updatedAt: Utilities.formatDate(new Date(), Session.getScriptTimeZone() || "Asia/Taipei", "yyyy-MM-dd HH:mm:ss"),
@@ -437,10 +783,14 @@ function submitTrade(payload, clientToken) {
   if (!isFinite(feeVal) || feeVal < 0) throw new Error("手續費不可為負數");
   const note = String(payload.note || "").trim();
 
+  let tradeSheetName = market === "TW" ? "台股交易明細" : "美股交易明細";
+  let tradeColMap;
   if (market === "TW") {
-    const sh = ss.getSheetByName("台股交易明細");
+    const sh = resolveSheetByRole_(ss, "twTrades");
     if (!sh) throw new Error("找不到《台股交易明細》工作表");
-    const nextRow = findNextAppendRow_(sh);
+    if (typeof sh.getName === "function") tradeSheetName = sh.getName();
+    tradeColMap = resolveHeaderMap_(getSheetHeaderRow_(sh, 9), TW_TRADE_HEADER_SPECS_);
+    const nextRow = findNextAppendRow_(sh, tradeColMap.date);
     const isPendingDca = tradeType === "定期定額" && priceVal === null;
     if (isPendingDca) {
       if (rawAmt === "" || !isFinite(Number(rawAmt)) || Number(rawAmt) <= 0) {
@@ -452,36 +802,59 @@ function submitTrade(payload, clientToken) {
     const amt = rawAmt !== "" ? Number(rawAmt) : Math.round(priceVal * sharesVal + (side === "買入" ? feeVal : -feeVal));
     if (!isFinite(amt) || amt < 0) throw new Error("成交／扣款總金額不正確");
     const useFormula = Boolean(payload.useDcaFormula) || isPendingDca;
+    const pxLetter = colIdxToLetter_(tradeColMap.price);
+    const amtLetter = colIdxToLetter_(tradeColMap.amount);
     const sharesCell = (tradeType === "定期定額" && useFormula)
-      ? "=IF(F" + nextRow + " = 0, 0, FLOOR(E" + nextRow + "/F" + nextRow + "))"
+      ? "=IF(" + pxLetter + nextRow + " = 0, 0, FLOOR(" + amtLetter + nextRow + "/" + pxLetter + nextRow + "))"
       : sharesVal;
-    sh.getRange(nextRow, 1, 1, 9).setValues([[
-      dateStr, side, tradeType, ticker, amt, priceVal === null ? "" : priceVal, sharesCell, feeVal, note
-    ]]);
+    writeRowByColMap_(sh, nextRow, [
+      { colIdx: tradeColMap.date, value: dateStr },
+      { colIdx: tradeColMap.side, value: side },
+      { colIdx: tradeColMap.kind, value: tradeType },
+      { colIdx: tradeColMap.ticker, value: ticker },
+      { colIdx: tradeColMap.amount, value: amt },
+      { colIdx: tradeColMap.price, value: priceVal === null ? "" : priceVal },
+      { colIdx: tradeColMap.shares, value: sharesCell },
+      { colIdx: tradeColMap.fee, value: feeVal },
+      { colIdx: tradeColMap.note, value: note }
+    ]);
   } else {
-    const sh = ss.getSheetByName("美股交易明細");
+    const sh = resolveSheetByRole_(ss, "usTrades");
     if (!sh) throw new Error("找不到《美股交易明細》工作表");
+    if (typeof sh.getName === "function") tradeSheetName = sh.getName();
+    tradeColMap = resolveHeaderMap_(getSheetHeaderRow_(sh, 8), US_TRADE_HEADER_SPECS_);
     const isDividend = tradeType === "股利";
     if (!isDividend && (priceVal === null || priceVal <= 0)) {
       throw new Error("美股買賣請填寫大於 0 的成交股價 (USD)");
     }
     if (sharesVal <= 0) throw new Error("請填寫大於 0 的成交股數");
-    const nextRow = findNextAppendRow_(sh);
+    const nextRow = findNextAppendRow_(sh, tradeColMap.date);
     const amt = rawAmt !== "" ? Number(rawAmt) : (priceVal ? Number((priceVal * sharesVal).toFixed(2)) : "");
     const pxCell = (priceVal === null || (isDividend && priceVal === 0)) ? "" : priceVal;
-    sh.getRange(nextRow, 1, 1, 7).setValues([[
-      dateStr, side, tradeType, ticker, amt, pxCell, sharesVal
-    ]]);
+    const usPairs = [
+      { colIdx: tradeColMap.date, value: dateStr },
+      { colIdx: tradeColMap.side, value: side },
+      { colIdx: tradeColMap.kind, value: tradeType },
+      { colIdx: tradeColMap.ticker, value: ticker },
+      { colIdx: tradeColMap.amount, value: amt },
+      { colIdx: tradeColMap.price, value: pxCell },
+      { colIdx: tradeColMap.shares, value: sharesVal }
+    ];
+    if (tradeColMap.note >= 0 && note !== "") {
+      usPairs.push({ colIdx: tradeColMap.note, value: note });
+    }
+    writeRowByColMap_(sh, nextRow, usPairs);
   }
 
-  // Dynamic check in the Financial Overview sheet
-  const ov = ss.getSheetByName("整體財務狀況");
+  // Dynamic header-aware check in the Financial Overview sheet
+  const ov = resolveSheetByRole_(ss, "overview");
   if (ov) {
     const ovFormulas = getOverviewFormulas_(ss);
+    const ovMap = resolveHeaderMap_(ovFormulas[0] || [], OVERVIEW_HEADER_SPECS_);
     let matchedIdx = null;
     for (let i = 1; i < ovFormulas.length; i++) {
-      const rTicker = extractRowTicker_(ovFormulas[i]);
-      const rTitle = String(ovFormulas[i][0] || "").trim().toUpperCase();
+      const rTicker = extractRowTicker_(ovFormulas[i], ovMap);
+      const rTitle = String(ovFormulas[i][ovMap.name] || "").trim().toUpperCase();
       if (rTicker === ticker || rTitle === ticker || rTitle === ticker.replace("TPE:", "")) {
         matchedIdx = i;
         break;
@@ -489,19 +862,25 @@ function submitTrade(payload, clientToken) {
     }
 
     if (matchedIdx !== null) {
-      const bCell = String(ovFormulas[matchedIdx][1] || "").trim();
-      if (payload.syncOverviewStatic !== false && sharesVal > 0 && dObj <= new Date() && bCell.indexOf("=") !== 0) {
-        const oldQty = Number(bCell || 0);
+      const qtyCell = String(ovFormulas[matchedIdx][ovMap.qty] || "").trim();
+      if (payload.syncOverviewStatic !== false && sharesVal > 0 && dObj <= new Date() && qtyCell.indexOf("=") !== 0) {
+        const oldQty = Number(qtyCell || 0);
         const newQty = Math.max(0, Number((oldQty + (side === "買入" ? sharesVal : -sharesVal)).toFixed(6)));
-        ov.getRange(matchedIdx + 1, 2).setValue(newQty);
+        ov.getRange(matchedIdx + 1, ovMap.qty + 1).setValue(newQty);
       }
     } else if (side === "買入" && payload.addToOverview !== false) {
+      const valColLetter = colIdxToLetter_(ovMap.valueTwd);
+      const qtyColLetter = colIdxToLetter_(ovMap.qty);
+      const pxColLetter = colIdxToLetter_(ovMap.unitPrice);
+      const pctColLetter = colIdxToLetter_(ovMap.weightPct);
+      const sumRe = new RegExp("SUM\\(\\s*" + valColLetter + "(\\d+)\\s*:\\s*" + valColLetter + "(\\d+)\\s*\\)", "i");
+
       let twSumRow = null, usSumRow = null, totalRow = null, levRow = null;
       let twRange = null, usRange = null;
       for (let i = 1; i < ovFormulas.length; i++) {
-        const title = String(ovFormulas[i][0] || "").trim();
-        const colD = String(ovFormulas[i][3] || "");
-        const mSum = colD.match(/SUM\(\s*D(\d+)\s*:\s*D(\d+)\s*\)/i);
+        const title = String(ovFormulas[i][ovMap.name] || "").trim();
+        const valCell = String(ovFormulas[i][ovMap.valueTwd] || "");
+        const mSum = valCell.match(sumRe);
         if (title === "台股部位資產" && mSum) { twSumRow = i + 1; twRange = [Number(mSum[1]), Number(mSum[2])]; }
         else if (title === "美股部位資產" && mSum) { usSumRow = i + 1; usRange = [Number(mSum[1]), Number(mSum[2])]; }
         else if (title === "當前總資產") { totalRow = i + 1; }
@@ -522,24 +901,36 @@ function submitTrade(payload, clientToken) {
         const levRowAfter = (levRow && levRow > afterRow) ? levRow + 1 : levRow;
         const cleanName = String(payload.displayName || "").trim() || (market === "TW" ? ticker.replace("TPE:", "") : ticker);
 
-        const sheetRef = market === "TW" ? "'台股交易明細'" : "'美股交易明細'";
-        const bForm = "=SUMIFS(" + sheetRef + "!$G:$G, " + sheetRef + "!$A:$A, \"<=\"&TODAY(), " + sheetRef + "!$D:$D, \"" + ticker + "\", " + sheetRef + "!$B:$B, \"買入\") - SUMIFS(" + sheetRef + "!$G:$G, " + sheetRef + "!$A:$A, \"<=\"&TODAY(), " + sheetRef + "!$D:$D, \"" + ticker + "\", " + sheetRef + "!$B:$B, \"賣出\")";
+        const sheetRef = "'" + tradeSheetName.replace(/'/g, "''") + "'";
+        const tDateL = colIdxToLetter_(tradeColMap.date);
+        const tSideL = colIdxToLetter_(tradeColMap.side);
+        const tTickL = colIdxToLetter_(tradeColMap.ticker);
+        const tShL = colIdxToLetter_(tradeColMap.shares);
+        const bForm = "=SUMIFS(" + sheetRef + "!$" + tShL + ":$" + tShL + ", " + sheetRef + "!$" + tDateL + ":$" + tDateL + ", \"<=\"&TODAY(), " + sheetRef + "!$" + tTickL + ":$" + tTickL + ", \"" + ticker + "\", " + sheetRef + "!$" + tSideL + ":$" + tSideL + ", \"買入\") - SUMIFS(" + sheetRef + "!$" + tShL + ":$" + tShL + ", " + sheetRef + "!$" + tDateL + ":$" + tDateL + ", \"<=\"&TODAY(), " + sheetRef + "!$" + tTickL + ":$" + tTickL + ", \"" + ticker + "\", " + sheetRef + "!$" + tSideL + ":$" + tSideL + ", \"賣出\")";
         const cForm = "=GOOGLEFINANCE(\"" + ticker + "\", \"price\")";
         const dForm = market === "TW"
-          ? "=FLOOR(B" + newRow + " * C" + newRow + ")"
-          : "=ROUND(B" + newRow + " * C" + newRow + " * GOOGLEFINANCE(\"CURRENCY:USDTWD\"))";
-        const eForm = "=ROUND(D" + newRow + "/D$" + totalRowAfter + "*100,2)";
+          ? "=FLOOR(" + qtyColLetter + newRow + " * " + pxColLetter + newRow + ")"
+          : "=ROUND(" + qtyColLetter + newRow + " * " + pxColLetter + newRow + " * GOOGLEFINANCE(\"CURRENCY:USDTWD\"))";
+        const eForm = "=ROUND(" + valColLetter + newRow + "/" + valColLetter + "$" + totalRowAfter + "*100,2)";
         const noteStr = market === "TW" ? ("以當日" + ticker + "股價計") : ("以當日" + ticker + "股價及匯率計");
 
-        ov.getRange(newRow, 1, 1, 6).setValues([[cleanName, bForm, cForm, dForm, eForm, noteStr]]);
-        ov.getRange(twSumRowAfter, 4).setFormula("=SUM(D" + twRange[0] + ":D" + newTwEnd + ")");
-        ov.getRange(usSumRowAfter, 4).setFormula("=SUM(D" + newUsStart + ":D" + newUsEnd + ")");
-        ov.getRange(totalRowAfter, 4, 1, 2).setFormulas([["=SUM(D2:D" + newUsEnd + ")", "=SUM(E2:E" + newUsEnd + ")"]]);
+        writeRowByColMap_(ov, newRow, [
+          { colIdx: ovMap.name, value: cleanName },
+          { colIdx: ovMap.qty, value: bForm },
+          { colIdx: ovMap.unitPrice, value: cForm },
+          { colIdx: ovMap.valueTwd, value: dForm },
+          { colIdx: ovMap.weightPct, value: eForm },
+          { colIdx: ovMap.note, value: noteStr }
+        ]);
+        ov.getRange(twSumRowAfter, ovMap.valueTwd + 1).setFormula("=SUM(" + valColLetter + twRange[0] + ":" + valColLetter + newTwEnd + ")");
+        ov.getRange(usSumRowAfter, ovMap.valueTwd + 1).setFormula("=SUM(" + valColLetter + newUsStart + ":" + valColLetter + newUsEnd + ")");
+        ov.getRange(totalRowAfter, ovMap.valueTwd + 1).setFormula("=SUM(" + valColLetter + "2:" + valColLetter + newUsEnd + ")");
+        ov.getRange(totalRowAfter, ovMap.weightPct + 1).setFormula("=SUM(" + pctColLetter + "2:" + pctColLetter + newUsEnd + ")");
 
         if (payload.isLeveraged2x && levRowAfter) {
-          const curLev = ov.getRange(levRowAfter, 2).getFormula();
+          const curLev = ov.getRange(levRowAfter, ovMap.qty + 1).getFormula();
           if (curLev) {
-            ov.getRange(levRowAfter, 2).setFormula(curLev.replace(/\)\s*\//, " + D" + newRow + ") /"));
+            ov.getRange(levRowAfter, ovMap.qty + 1).setFormula(curLev.replace(/\)\s*\//, " + " + valColLetter + newRow + ") /"));
           }
         }
       }
@@ -557,14 +948,16 @@ function fillPendingDca(payload, clientToken) {
   const tok = clientToken || (payload && payload._token);
   verifyAccess_(tok);
   const ss = getTargetSpreadsheet_();
-  const sh = ss.getSheetByName("台股交易明細");
+  const sh = resolveSheetByRole_(ss, "twTrades");
   if (!sh) throw new Error("找不到《台股交易明細》工作表");
+  const colMap = resolveHeaderMap_(getSheetHeaderRow_(sh, 9), TW_TRADE_HEADER_SPECS_);
   const rowNumber = Number(payload.rowNumber);
   const price = Number(payload.price);
   if (rowNumber < 2 || price <= 0) throw new Error("列號或股價不正確");
-  const cur = sh.getRange(rowNumber, 6).getDisplayValue();
+  const priceCol1 = colMap.price + 1;
+  const cur = sh.getRange(rowNumber, priceCol1).getDisplayValue();
   if (cur !== "") throw new Error("該列已有成交價格：" + cur);
-  sh.getRange(rowNumber, 6).setValue(price);
+  sh.getRange(rowNumber, priceCol1).setValue(price);
   SpreadsheetApp.flush();
   const fresh = getPortfolioPayload(tok);
   fresh.ok = true;
@@ -576,31 +969,33 @@ function updateCashBalance(payload, clientToken) {
   const tok = clientToken || (payload && payload._token);
   verifyAccess_(tok);
   const ss = getTargetSpreadsheet_();
-  const ov = ss.getSheetByName("整體財務狀況");
+  const ov = resolveSheetByRole_(ss, "overview");
   if (!ov) throw new Error("找不到《整體財務狀況》工作表");
+  const ovMap = resolveHeaderMap_(getSheetHeaderRow_(ov, 8), OVERVIEW_HEADER_SPECS_);
   const accountName = String(payload.accountName || "").trim();
   const amount = Number(payload.amount);
   const maxR = Math.max(30, ov.getLastRow());
-  const titles = ov.getRange(1, 1, maxR, 1).getDisplayValues();
+  const titles = ov.getRange(1, ovMap.name + 1, maxR, 1).getDisplayValues();
   let targetRow = null;
   for (let i = 1; i < titles.length; i++) {
     if (String(titles[i][0] || "").trim() === accountName) { targetRow = i + 1; break; }
   }
   if (!targetRow) throw new Error("找不到帳戶：" + accountName);
 
-  const existingFormula = ov.getRange(targetRow, 4).getFormula();
+  const valCol1 = ovMap.valueTwd + 1;
+  const existingFormula = ov.getRange(targetRow, valCol1).getFormula();
   const fxMatch = existingFormula ? existingFormula.match(/GOOGLEFINANCE\(\s*"CURRENCY:([A-Z]{6})"\s*\)/i) : null;
   if (fxMatch) {
-    ov.getRange(targetRow, 4).setFormula("=" + amount + " * GOOGLEFINANCE(\"CURRENCY:" + fxMatch[1].toUpperCase() + "\")");
+    ov.getRange(targetRow, valCol1).setFormula("=" + amount + " * GOOGLEFINANCE(\"CURRENCY:" + fxMatch[1].toUpperCase() + "\")");
   } else if (accountName.indexOf("日圓") >= 0 || accountName.indexOf("日幣") >= 0 || accountName.toUpperCase().indexOf("JPY") >= 0) {
-    ov.getRange(targetRow, 4).setFormula("=" + amount + " * GOOGLEFINANCE(\"CURRENCY:JPYTWD\")");
+    ov.getRange(targetRow, valCol1).setFormula("=" + amount + " * GOOGLEFINANCE(\"CURRENCY:JPYTWD\")");
   } else if (accountName.indexOf("美金") >= 0 || accountName.indexOf("美元") >= 0 || accountName.toUpperCase().indexOf("USD") >= 0) {
-    ov.getRange(targetRow, 4).setFormula("=" + amount + " * GOOGLEFINANCE(\"CURRENCY:USDTWD\")");
+    ov.getRange(targetRow, valCol1).setFormula("=" + amount + " * GOOGLEFINANCE(\"CURRENCY:USDTWD\")");
   } else {
-    ov.getRange(targetRow, 4).setValue(amount);
+    ov.getRange(targetRow, valCol1).setValue(amount);
   }
-  if (payload.updateNote) {
-    ov.getRange(targetRow, 6).setValue(String(payload.note || ""));
+  if (payload.updateNote && ovMap.note >= 0) {
+    ov.getRange(targetRow, ovMap.note + 1).setValue(String(payload.note || ""));
   }
   SpreadsheetApp.flush();
   const fresh = getPortfolioPayload(tok);
@@ -609,37 +1004,72 @@ function updateCashBalance(payload, clientToken) {
   return fresh;
 }
 
+function findHeaderColExplicit_(headerRow, aliases) {
+  const norm = (headerRow || []).map(normalizeHeaderText_);
+  for (let c = 0; c < norm.length; c++) {
+    if (!norm[c]) continue;
+    for (let a = 0; a < aliases.length; a++) {
+      const na = normalizeHeaderText_(aliases[a]);
+      if (norm[c] === na || norm[c].indexOf(na) >= 0) return c;
+    }
+  }
+  return -1;
+}
+
 function updateInitialCost(payload, clientToken) {
   const tok = clientToken || (payload && payload._token);
   verifyAccess_(tok);
   const ss = getTargetSpreadsheet_();
-  const ov = ss.getSheetByName("整體財務狀況");
+  const ov = resolveSheetByRole_(ss, "overview");
   if (!ov) throw new Error("找不到《整體財務狀況》工作表");
   const holdingName = String(payload.holdingName || "").trim();
   if (!holdingName) throw new Error("請選擇資產項目");
 
+  const headerRow = getSheetHeaderRow_(ov, 12);
+  const ovMap = resolveHeaderMap_(headerRow, OVERVIEW_HEADER_SPECS_);
   const rawQty = String(payload.initQty !== undefined ? payload.initQty : "").trim();
   const rawCost = String(payload.initAvgCost !== undefined ? payload.initAvgCost : "").trim();
   const qtyCell = rawQty === "" ? "" : Number(rawQty);
   const costCell = (rawCost === "" || Number(rawCost) <= 0) ? "" : Number(Number(rawCost).toFixed(4));
 
   const maxR = Math.max(45, ov.getLastRow());
-  const titles = ov.getRange(1, 1, maxR, 1).getDisplayValues();
+  const titles = ov.getRange(1, ovMap.name + 1, maxR, 1).getDisplayValues();
   let targetRow = null;
   for (let i = 1; i < titles.length; i++) {
     if (String(titles[i][0] || "").trim() === holdingName) { targetRow = i + 1; break; }
   }
   if (!targetRow) throw new Error("找不到項目：" + holdingName);
 
-  ov.getRange(1, 7, 1, 2).setValues([["期初未記錄股數", "期初成本均價"]]);
-  ov.getRange(targetRow, 7, 1, 2).setValues([[qtyCell, costCell]]);
+  let qtyColIdx = findHeaderColExplicit_(headerRow, ["期初未記錄股數", "期初股數", "期初數量", "Initial Shares"]);
+  let costColIdx = findHeaderColExplicit_(headerRow, ["期初成本均價", "期初均價", "期初成本", "Initial Cost", "Avg Cost"]);
+
+  if (qtyColIdx < 0 || costColIdx < 0) {
+    const gOccupied = String(headerRow[6] || "").trim() !== "" && qtyColIdx !== 6 && costColIdx !== 6;
+    const hOccupied = String(headerRow[7] || "").trim() !== "" && qtyColIdx !== 7 && costColIdx !== 7;
+    let baseIdx = 6;
+    if (gOccupied || hOccupied) {
+      baseIdx = headerRow.length;
+      while (baseIdx > 0 && String(headerRow[baseIdx - 1] || "").trim() === "") baseIdx--;
+      if (baseIdx < 6) baseIdx = 6;
+    }
+    if (qtyColIdx < 0) qtyColIdx = baseIdx;
+    if (costColIdx < 0) costColIdx = (qtyColIdx === baseIdx) ? (baseIdx + 1) : (baseIdx + 1);
+    if (costColIdx === qtyColIdx) costColIdx = qtyColIdx + 1;
+  }
+
+  ov.getRange(1, qtyColIdx + 1).setValue("期初未記錄股數");
+  ov.getRange(1, costColIdx + 1).setValue("期初成本均價");
+  ov.getRange(targetRow, qtyColIdx + 1).setValue(qtyCell);
+  ov.getRange(targetRow, costColIdx + 1).setValue(costCell);
   SpreadsheetApp.flush();
 
+  const qtyL = colIdxToLetter_(qtyColIdx);
+  const costL = colIdxToLetter_(costColIdx);
   const fresh = getPortfolioPayload(tok);
   fresh.ok = true;
   fresh.message = costCell === ""
     ? ("已清除「" + holdingName + "」期初成本設定！")
-    : ("已儲存「" + holdingName + "」期初成本均價至《整體財務狀況》G" + targetRow + ":H" + targetRow + "！");
+    : ("已儲存「" + holdingName + "」期初成本均價至《整體財務狀況》" + qtyL + targetRow + ":" + costL + targetRow + "！");
   return fresh;
 }
 
@@ -672,27 +1102,31 @@ function fmtTwd_(n, signed) {
 function buildStandaloneMonthlyReport_(ss, targetYm) {
   const title = ss.getName();
   const sheetUrl = ss.getUrl();
-  const ovSh = ss.getSheetByName("整體財務狀況");
+  const ovSh = resolveSheetByRole_(ss, "overview");
   const ovVals = ovSh ? ovSh.getDataRange().getDisplayValues() : [];
+  const ovMap = resolveHeaderMap_(ovVals[0] || [], OVERVIEW_HEADER_SPECS_);
 
   let cashTotal = 0, twTotal = 0, usTotal = 0, totalAssets = 0, levRatio = 1.0;
-  ovVals.forEach(function (r) {
-    const k = String(r[0] || "").trim();
-    if (k === "現金部位資產") cashTotal = parseNum_(r[3]);
-    else if (k === "台股部位資產") twTotal = parseNum_(r[3]);
-    else if (k === "美股部位資產") usTotal = parseNum_(r[3]);
-    else if (k === "當前總資產") totalAssets = parseNum_(r[3]);
-    else if (k === "資產槓桿比") levRatio = parseNum_(r[1]) || 1.0;
+  ovVals.slice(1).forEach(function (r) {
+    const k = String(r[ovMap.name] || "").trim();
+    if (k === "現金部位資產") cashTotal = parseNum_(r[ovMap.valueTwd]);
+    else if (k === "台股部位資產") twTotal = parseNum_(r[ovMap.valueTwd]);
+    else if (k === "美股部位資產") usTotal = parseNum_(r[ovMap.valueTwd]);
+    else if (k === "當前總資產") totalAssets = parseNum_(r[ovMap.valueTwd]);
+    else if (k === "資產槓桿比") levRatio = parseNum_(r[ovMap.qty]) || 1.0;
   });
 
   // Historical Net Worth in targetYm
-  const histSh = ss.getSheetByName("歷史紀錄");
-  const histRows = histSh ? histSh.getDataRange().getDisplayValues().slice(1) : [];
+  const histSh = resolveSheetByRole_(ss, "history");
+  const histAll = histSh ? histSh.getDataRange().getDisplayValues() : [];
+  const histMap = resolveHeaderMap_(histAll[0] || [], HISTORY_HEADER_SPECS_);
+  const histRows = histAll.slice(1);
   const validHist = [];
   histRows.forEach(function (r) {
-    if (!r[0] || r[1] === "#N/A" || r[2] === "#N/A" || r[3] === "#N/A") return;
-    const tot = parseNum_(r[3]);
-    if (tot > 0) validHist.push({ date: String(r[0]).trim(), ym: normYm_(r[0]), tot: tot });
+    const dt = r[histMap.date];
+    if (!dt || r[histMap.tw] === "#N/A" || r[histMap.us] === "#N/A" || r[histMap.total] === "#N/A") return;
+    const tot = parseNum_(r[histMap.total]);
+    if (tot > 0) validHist.push({ date: String(dt).trim(), ym: normYm_(dt), tot: tot });
   });
 
   const monthPts = validHist.filter(function (p) { return p.ym === targetYm; });
@@ -710,29 +1144,36 @@ function buildStandaloneMonthlyReport_(ss, targetYm) {
   const ddPct = peakAll > 0 ? ((endVal - peakAll) / peakAll) * 100 : 0;
 
   // Trades in targetYm
-  const twSh = ss.getSheetByName("台股交易明細");
-  const usSh = ss.getSheetByName("美股交易明細");
-  const twRows = twSh ? twSh.getDataRange().getDisplayValues().slice(1) : [];
-  const usRows = usSh ? usSh.getDataRange().getDisplayValues().slice(1) : [];
+  const twSh = resolveSheetByRole_(ss, "twTrades");
+  const usSh = resolveSheetByRole_(ss, "usTrades");
+  const twAll = twSh ? twSh.getDataRange().getDisplayValues() : [];
+  const usAll = usSh ? usSh.getDataRange().getDisplayValues() : [];
+  const twMap = resolveHeaderMap_(twAll[0] || [], TW_TRADE_HEADER_SPECS_);
+  const usMap = resolveHeaderMap_(usAll[0] || [], US_TRADE_HEADER_SPECS_);
+  const twRows = twAll.slice(1);
+  const usRows = usAll.slice(1);
 
   const monthTrades = [];
   let twBuyTwd = 0, twSellTwd = 0, usBuyUsd = 0, usSellUsd = 0, pendingDcaCount = 0;
 
   twRows.forEach(function (r) {
-    if (!r[0] || !r[3]) return;
-    if (String(r[2]) === "定期定額" && String(r[5] || "").trim() === "") pendingDcaCount++;
-    if (normYm_(r[0]) !== targetYm || parseNum_(r[6]) <= 0) return;
-    const amt = parseNum_(r[4]);
-    if (r[1] === "買入") twBuyTwd += amt; else twSellTwd += amt;
-    monthTrades.push({ date: r[0], mkt: "台股", side: r[1], sym: r[3], qty: r[6], amtStr: fmtTwd_(amt, false) });
+    const dt = r[twMap.date], sym = r[twMap.ticker];
+    if (!dt || !sym) return;
+    const kind = r[twMap.kind], pxStr = r[twMap.price], qtyVal = r[twMap.shares], side = r[twMap.side];
+    if (String(kind) === "定期定額" && String(pxStr || "").trim() === "") pendingDcaCount++;
+    if (normYm_(dt) !== targetYm || parseNum_(qtyVal) <= 0) return;
+    const amt = parseNum_(r[twMap.amount]);
+    if (side === "買入") twBuyTwd += amt; else twSellTwd += amt;
+    monthTrades.push({ date: dt, mkt: "台股", side: side, sym: sym, qty: qtyVal, amtStr: fmtTwd_(amt, false) });
   });
 
   usRows.forEach(function (r) {
-    if (!r[0] || !r[3] || normYm_(r[0]) !== targetYm || parseNum_(r[6]) <= 0) return;
-    const px = parseNum_(r[5]), qty = parseNum_(r[6]);
-    const usd = px > 0 ? px * qty : parseNum_(r[4]);
-    if (r[1] === "買入") usBuyUsd += usd; else usSellUsd += usd;
-    monthTrades.push({ date: r[0], mkt: "美股", side: r[1], sym: r[3], qty: r[6], amtStr: "USD $" + usd.toFixed(2) });
+    const dt = r[usMap.date], sym = r[usMap.ticker], qtyRaw = r[usMap.shares];
+    if (!dt || !sym || normYm_(dt) !== targetYm || parseNum_(qtyRaw) <= 0) return;
+    const px = parseNum_(r[usMap.price]), qty = parseNum_(qtyRaw), side = r[usMap.side];
+    const usd = px > 0 ? px * qty : parseNum_(r[usMap.amount]);
+    if (side === "買入") usBuyUsd += usd; else usSellUsd += usd;
+    monthTrades.push({ date: dt, mkt: "美股", side: side, sym: sym, qty: qtyRaw, amtStr: "USD $" + usd.toFixed(2) });
   });
 
   // Check next month's RSU vestings (optional)
@@ -742,12 +1183,15 @@ function buildStandaloneMonthlyReport_(ss, targetYm) {
     const nd = new Date(Number(ymParts[0]), Number(ymParts[1]), 1);
     nextYm = nd.getFullYear() + "-" + (nd.getMonth() + 1 < 10 ? "0" + (nd.getMonth() + 1) : String(nd.getMonth() + 1));
   }
-  const rsuSh = ss.getSheetByName("公司股票明細");
-  const rsuRows = rsuSh ? rsuSh.getDataRange().getDisplayValues().slice(1) : [];
+  const rsuSh = resolveSheetByRole_(ss, "rsu");
+  const rsuAll = rsuSh ? rsuSh.getDataRange().getDisplayValues() : [];
+  const rsuMap = resolveHeaderMap_(rsuAll[0] || [], RSU_HEADER_SPECS_);
+  const rsuRows = rsuAll.slice(1);
   const upcomingRsu = [];
   rsuRows.forEach(function (r) {
-    if (nextYm && normYm_(r[0]) === nextYm && parseNum_(r[2]) > 0) {
-      upcomingRsu.push(r[0] + " (+" + r[2] + " 股 " + (r[1] || "RSU") + ")");
+    const dt = r[rsuMap.date], shVal = r[rsuMap.shares], sym = r[rsuMap.ticker];
+    if (nextYm && normYm_(dt) === nextYm && parseNum_(shVal) > 0) {
+      upcomingRsu.push(dt + " (+" + shVal + " 股 " + (sym || "RSU") + ")");
     }
   });
 
@@ -922,4 +1366,204 @@ function sendQuickReportFromMenu() {
   }
   const res = sendMonthlyReportNow({ email: cfg.email });
   SpreadsheetApp.getUi().alert(res.message);
+}
+
+/* ==================== Standard Workbook Initializer & Daily History Scheduler ==================== */
+
+function isSheetBlank_(sh) {
+  if (!sh || sh.getLastRow() === 0) return true;
+  const vals = sh.getDataRange().getDisplayValues();
+  for (let r = 0; r < vals.length; r++) {
+    for (let c = 0; c < vals[r].length; c++) {
+      if (String(vals[r][c] || "").trim() !== "") return false;
+    }
+  }
+  return true;
+}
+
+function formatStarterHeader_(sh, numCols) {
+  try {
+    if (typeof sh.setFrozenRows === "function") sh.setFrozenRows(1);
+    const hdrRange = sh.getRange(1, 1, 1, numCols);
+    if (typeof hdrRange.setFontWeight === "function") hdrRange.setFontWeight("bold");
+    if (typeof hdrRange.setBackground === "function") hdrRange.setBackground("#f1f5f9");
+  } catch (_) {}
+}
+
+function initializeStandardWorkbook() {
+  const ss = getTargetSpreadsheet_();
+  const created = [];
+  const skipped = [];
+
+  function ensureStarterTab(roleKey, canonicalName, rows, formatCols) {
+    let sh = resolveSheetByRole_(ss, roleKey) || ss.getSheetByName(canonicalName);
+    if (sh && !isSheetBlank_(sh)) {
+      skipped.push(typeof sh.getName === "function" ? sh.getName() : canonicalName);
+      return sh;
+    }
+    if (!sh) sh = ss.insertSheet(canonicalName);
+    sh.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
+    formatStarterHeader_(sh, rows[0].length);
+    if (formatCols) formatCols(sh);
+    created.push(typeof sh.getName === "function" ? sh.getName() : canonicalName);
+    return sh;
+  }
+
+  // 1. TW & US Trade Logs
+  ensureStarterTab("twTrades", "台股交易明細", [
+    ["日期", "買賣別", "交易性質", "股票代碼", "金額", "成交股價", "股數", "手續費", "備註"]
+  ]);
+  ensureStarterTab("usTrades", "美股交易明細", [
+    ["日期", "買賣別", "交易性質", "股票代碼", "金額(USD)", "成交股價(USD)", "股數", "備註", "參考匯率"],
+    ["", "", "", "", "", "", "", "", "=GOOGLEFINANCE(\"CURRENCY:USDTWD\")"]
+  ]);
+
+  // 2. Financial Overview with contiguous rows (no blank gap before summary block)
+  ensureStarterTab("overview", "整體財務狀況", [
+    ["資產項目", "持有股數", "目前股價", "台幣現值", "佔比 (%)", "備註", "期初未記錄股數", "期初成本均價"],
+    ["台幣活存", "", "", 100000, "=ROUND(D2/D$9*100,2)", "現金帳戶範例（可於儀表板修改餘額）", "", ""],
+    ["美金活存", "", "", "=0 * GOOGLEFINANCE(\"CURRENCY:USDTWD\")", "=ROUND(D3/D$9*100,2)", "外幣帳戶範例", "", ""],
+    [
+      "0050 (元大台灣50)",
+      "=SUMIFS('台股交易明細'!$G:$G, '台股交易明細'!$A:$A, \"<=\"&TODAY(), '台股交易明細'!$D:$D, \"TPE:0050\", '台股交易明細'!$B:$B, \"買入\") - SUMIFS('台股交易明細'!$G:$G, '台股交易明細'!$A:$A, \"<=\"&TODAY(), '台股交易明細'!$D:$D, \"TPE:0050\", '台股交易明細'!$B:$B, \"賣出\")",
+      "=GOOGLEFINANCE(\"TPE:0050\", \"price\")",
+      "=FLOOR(B4*C4)",
+      "=ROUND(D4/D$9*100,2)",
+      "台股持股範例",
+      "",
+      ""
+    ],
+    [
+      "VT (全球股市 ETF)",
+      "=SUMIFS('美股交易明細'!$G:$G, '美股交易明細'!$A:$A, \"<=\"&TODAY(), '美股交易明細'!$D:$D, \"VT\", '美股交易明細'!$B:$B, \"買入\") - SUMIFS('美股交易明細'!$G:$G, '美股交易明細'!$A:$A, \"<=\"&TODAY(), '美股交易明細'!$D:$D, \"VT\", '美股交易明細'!$B:$B, \"賣出\")",
+      "=GOOGLEFINANCE(\"VT\", \"price\")",
+      "=ROUND(B5*C5*GOOGLEFINANCE(\"CURRENCY:USDTWD\"))",
+      "=ROUND(D5/D$9*100,2)",
+      "美股持股範例",
+      "",
+      ""
+    ],
+    ["現金部位資產", "", "", "=SUM(D2:D3)", "=ROUND(D6/D$9*100,2)", "", "", ""],
+    ["台股部位資產", "", "", "=SUM(D4:D4)", "=ROUND(D7/D$9*100,2)", "", "", ""],
+    ["美股部位資產", "", "", "=SUM(D5:D5)", "=ROUND(D8/D$9*100,2)", "", "", ""],
+    ["當前總資產", "", "", "=SUM(D2:D5)", "=SUM(E2:E5)", "", "", ""],
+    ["資產槓桿比", "=(D7 + D8) / D9", "", "", "", "分子可於新增 2x ETF 時自動納入", "", ""]
+  ]);
+
+  // 3. History, RSU (optional), Salary & Allocation
+  ensureStarterTab("history", "歷史紀錄", [
+    ["日期", "台股部位", "美股部位", "總資產"]
+  ]);
+  ensureStarterTab("rsu", "公司股票明細", [
+    ["歸屬日期", "股票代碼", "股數", "狀態"]
+  ]);
+  ensureStarterTab("salary", "每月薪資明細", [
+    ["項目", "金額(TWD)", "備註"],
+    ["單月總收入", 0, "可選填，用於計算月儲蓄投資率"]
+  ]);
+  ensureStarterTab("alloc", "每月收入分配", [
+    ["項目", "金額(TWD)", "備註"]
+  ]);
+
+  // 4. Hidden benchmark cache sheet
+  const hadBench = Boolean(resolveSheetByRole_(ss, "benchmark") || ss.getSheetByName("_大盤基準快取"));
+  ensureBenchmarkCacheSheet_(ss);
+  if (!hadBench) created.push("_大盤基準快取 (已隱藏)");
+  else skipped.push("_大盤基準快取");
+
+  SpreadsheetApp.flush();
+
+  const summaryMsg =
+    "✅ 標準帳本檢查與初始化完成！\n\n" +
+    (created.length ? ("• 新建／初始化工作表 (" + created.length + ")：\n  " + created.join("、") + "\n\n") : "• 無需新建（標準工作表皆已存在）。\n\n") +
+    (skipped.length ? ("• 已保留既有資料（未覆蓋）：\n  " + skipped.join("、") + "\n\n") : "") +
+    "接下來可直接點「📊 財務儀表板 → 開啟互動式資產儀表板」或「📱 取得 iPhone App 專屬配對碼」！";
+
+  try {
+    SpreadsheetApp.getUi().alert("標準帳本初始化結果", summaryMsg, SpreadsheetApp.getUi().ButtonSet.OK);
+  } catch (_) {}
+
+  return { ok: true, created: created, skipped: skipped, message: summaryMsg };
+}
+
+function recordDailyHistorySnapshot() {
+  const ss = getTargetSpreadsheet_();
+  const ovSh = resolveSheetByRole_(ss, "overview");
+  const histSh = resolveSheetByRole_(ss, "history");
+  if (!ovSh || !histSh) return { ok: false, skipped: "missing_sheet" };
+
+  const ovVals = ovSh.getDataRange().getDisplayValues();
+  const ovMap = resolveHeaderMap_(ovVals[0] || [], OVERVIEW_HEADER_SPECS_);
+  let twRaw = "", usRaw = "", totRaw = "";
+  ovVals.slice(1).forEach(function (r) {
+    const title = String(r[ovMap.name] || "").trim();
+    if (title === "台股部位資產") twRaw = String(r[ovMap.valueTwd] || "").trim();
+    else if (title === "美股部位資產") usRaw = String(r[ovMap.valueTwd] || "").trim();
+    else if (title === "當前總資產") totRaw = String(r[ovMap.valueTwd] || "").trim();
+  });
+
+  if (twRaw === "#N/A" || usRaw === "#N/A" || totRaw === "#N/A") {
+    return { ok: false, skipped: "na_formula_value" };
+  }
+  const twVal = Math.round(parseNum_(twRaw));
+  const usVal = Math.round(parseNum_(usRaw));
+  const totVal = Math.round(parseNum_(totRaw));
+  if (totVal <= 0) return { ok: false, skipped: "zero_total" };
+
+  const histAll = histSh.getDataRange().getDisplayValues();
+  const histMap = resolveHeaderMap_(histAll[0] || [], HISTORY_HEADER_SPECS_);
+  const tz = Session.getScriptTimeZone() || "Asia/Taipei";
+  const todayParts = Utilities.formatDate(new Date(), tz, "yyyy/M/d");
+  const todayIso = Utilities.formatDate(new Date(), tz, "yyyy-MM-dd");
+
+  let targetRow = null;
+  for (let i = 1; i < histAll.length; i++) {
+    const rawD = String(histAll[i][histMap.date] || "").trim().replace(/-/g, "/");
+    if (!rawD) continue;
+    const pts = rawD.split("/");
+    if (pts.length >= 3) {
+      const iso = Number(pts[0]) + "-" + (Number(pts[1]) < 10 ? "0" + Number(pts[1]) : pts[1]) + "-" + (Number(pts[2]) < 10 ? "0" + Number(pts[2]) : pts[2]);
+      if (iso === todayIso) {
+        targetRow = i + 1;
+        break;
+      }
+    }
+  }
+  if (!targetRow) targetRow = findNextAppendRow_(histSh, histMap.date);
+
+  writeRowByColMap_(histSh, targetRow, [
+    { colIdx: histMap.date, value: todayParts },
+    { colIdx: histMap.tw, value: twVal },
+    { colIdx: histMap.us, value: usVal },
+    { colIdx: histMap.total, value: totVal }
+  ]);
+  return { ok: true, date: todayParts, total: totVal, row: targetRow };
+}
+
+function toggleDailyHistoryTrigger() {
+  getTargetSpreadsheet_();
+  const triggers = ScriptApp.getProjectTriggers();
+  let removed = 0;
+  for (let i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === "recordDailyHistorySnapshot") {
+      ScriptApp.deleteTrigger(triggers[i]);
+      removed++;
+    }
+  }
+
+  let msg;
+  if (removed > 0) {
+    msg = "已關閉「每日自動記錄歷史淨值」排程。";
+  } else {
+    ScriptApp.newTrigger("recordDailyHistorySnapshot")
+      .timeBased()
+      .everyDays(1)
+      .atHour(23)
+      .create();
+    msg = "⏰ 已啟用每日 23:00 自動記錄《歷史紀錄》淨值快照！";
+  }
+  try {
+    SpreadsheetApp.getUi().alert(msg);
+  } catch (_) {}
+  return { ok: true, enabled: removed === 0, message: msg };
 }

@@ -1,4 +1,4 @@
-const CACHE_NAME = "wealth-pwa-shell-v8";
+const CACHE_NAME = "wealth-pwa-shell-v11";
 const SHELL_ASSETS = [
   "./",
   "./index.html",
