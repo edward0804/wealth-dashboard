@@ -1,6 +1,15 @@
 /data/
 /server.py
 /apps-script/
+/src/
+/tests/
+/dist/
+/package.json
+/package-lock.json
+/tsconfig.json
+/vite.config.ts
+/vitest.config.ts
+node_modules/
 __pycache__/
 *.pyc
 .DS_Store

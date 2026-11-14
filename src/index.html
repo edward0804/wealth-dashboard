@@ -1,0 +1,1179 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Duby Wealth" />
+  <meta name="theme-color" id="metaThemeColor" content="#f4f7fb" />
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="apple-touch-icon" sizes="180x180" href="./icons/apple-touch-icon.png?v=3" />
+  <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png?v=3" />
+  <title>Duby Wealth Dashboard</title>
+  <script>
+    (function () {
+      try {
+        var saved = localStorage.getItem("wealth_theme");
+        if (saved === "dark" || saved === "light") {
+          document.documentElement.setAttribute("data-theme", saved);
+          var mt = document.getElementById("metaThemeColor");
+          if (mt) mt.setAttribute("content", saved === "dark" ? "#0b101b" : "#f4f7fb");
+        }
+      } catch (_) {}
+    })();
+  </script>
+</head>
+<body>
+  <div class="container">
+    <!-- Top Header -->
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-icon" id="brandIcon">₴</div>
+        <div style="min-width:0;">
+          <h1>Duby Wealth Dashboard</h1>
+          <div class="brand-sub">
+            <span class="mob-hide-sub">資料庫：<a id="sheetLink" href="#" target="_blank" rel="noopener">開啟綁定之 Google Sheet</a></span>
+            <span class="mob-hide-sub">•</span>
+            <span id="syncStatus">載入中...</span>
+            <span id="exportGasWrap" class="mob-hide-sub" style="display:none;">• <a href="#" id="exportGasBtn" title="取得可安裝於任何同格式 Google Sheet 的 Apps Script 程式碼">☁️ 匯出 Apps Script</a></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <label class="toggle-pill" id="rsuToggleLabel" title="將尚未歸屬的 RSU 納入資產與圓餅圖模擬">
+          <input type="checkbox" id="toggleUnvestedRsu" />
+          <span>納入未歸屬 RSU (<span id="unvestedCountLabel">0</span> 股)</span>
+        </label>
+        <button class="btn" id="openPwaModalBtn" type="button" title="iPhone 全螢幕 App 安裝與雲端配對設定">📱<span class="btn-lbl-desk"> iPhone App</span></button>
+        <button class="btn" id="privacyBtn" type="button" title="展示給他人看時可一鍵隱藏所有金額與股數">👁<span class="btn-lbl-desk"> 隱藏金額</span></button>
+        <button class="btn" id="themeBtn" type="button">🌙<span class="btn-lbl-desk"> 深色</span></button>
+        <button class="btn" id="syncBtn" type="button">↻<span class="btn-lbl-desk"> 同步讀取</span></button>
+        <button class="btn btn-write" id="openWriteModalBtn" type="button">＋ 新增交易 / 更新資產</button>
+      </div>
+    </header>
+
+    <!-- Interactive Demo Mode Banner -->
+    <div id="demoModeBanner" style="display:none;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:10px 16px;margin-bottom:14px;border-radius:12px;background:var(--warn-bg);border:1px solid var(--warn);font-size:13px;">
+      <div style="line-height:1.5;">
+        <b>🧪 互動展示預覽模式 (Demo Mode)</b>：目前載入範例投資組合（支援再平衡、XIRR 與模擬記帳；改動僅暫存於瀏覽器）。
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button type="button" class="btn btn-xs" id="demoGasGuideBtn">🚀 30 秒建好我的 Google Sheet</button>
+        <button type="button" class="btn btn-xs btn-write" id="demoPairBtn">🔑 貼上配對碼連線真實帳本</button>
+      </div>
+    </div>
+
+    <!-- Top-Level Navigation Tabs -->
+    <nav class="page-tabs" id="mainPageTabs" aria-label="主頁籤切換">
+      <button type="button" class="page-tab active" data-page="overview">
+        📊 資產配置總覽
+      </button>
+      <button type="button" class="page-tab" data-page="trades">
+        🧾 區間交易查詢
+        <span class="tab-count-pill" id="pageTradesCountBadge">0 筆</span>
+      </button>
+      <button type="button" class="page-tab" data-page="rebalance">
+        ⚖️ 智慧再平衡試算
+      </button>
+      <button type="button" class="page-tab" data-page="xirr">
+        📈 XIRR 績效對比大盤
+      </button>
+      <button type="button" class="page-tab" data-page="report">
+        📬 自動財務月報
+      </button>
+    </nav>
+
+    <!-- ==================== PAGE 1: OVERVIEW DASHBOARD ==================== -->
+    <div id="overviewPageView">
+    <!-- Top KPI Cards -->
+    <section class="kpi-grid">
+      <div class="card">
+        <div class="kpi-label">
+          <span id="netWorthTitle">當前總資產 (TWD)</span>
+          <span class="badge badge-info" id="fxBadge">USD/TWD 32.86</span>
+        </div>
+        <div class="kpi-value" id="kpiTotalAssets">—</div>
+        <div class="kpi-foot" id="kpiAssetBreakdown">—</div>
+      </div>
+
+      <div class="card">
+        <div class="kpi-label">
+          <span>已追蹤部位未實現損益 & 報酬率</span>
+          <span class="badge badge-pos" id="kpiRoiBadge">—</span>
+        </div>
+        <div class="kpi-value" id="kpiUnrealizedPnl">—</div>
+        <div class="kpi-foot" id="kpiCostFoot">—</div>
+      </div>
+
+      <div class="card">
+        <div class="kpi-label">
+          <span>歷史紀錄累積淨值成長</span>
+          <span class="badge badge-pos" id="kpiHistGrowthBadge">—</span>
+        </div>
+        <div class="kpi-value" id="kpiHistGain">—</div>
+        <div class="kpi-foot" id="kpiDrawdownFoot">—</div>
+      </div>
+
+      <div class="card">
+        <div class="kpi-label">
+          <span>實質槓桿曝險 / 月投資率</span>
+          <span class="badge badge-warn" id="kpiLeverageBadge">—</span>
+        </div>
+        <div class="kpi-value" id="kpiExposure">—</div>
+        <div class="kpi-foot" id="kpiSavingsFoot">—</div>
+      </div>
+    </section>
+
+    <!-- Row 1: Interactive Pie Chart + Wealth History Chart -->
+    <section class="grid-2">
+      <div class="card">
+        <div class="section-head">
+          <div>
+            <div class="section-title">資產分布圓餅圖</div>
+            <div class="section-sub">移至扇區或右側項目可檢視個別佔比與金額</div>
+          </div>
+          <div class="seg-group" id="pieModeGroup">
+            <button class="seg-btn active" data-mode="holding" type="button">依個別標的</button>
+            <button class="seg-btn" data-mode="category" type="button">台/美/現金</button>
+            <button class="seg-btn" data-mode="strategy" type="button">依策略屬性</button>
+          </div>
+        </div>
+
+        <div class="pie-wrap">
+          <div class="donut-stage">
+            <svg id="donutSvg" width="250" height="250" viewBox="0 0 250 250"></svg>
+            <div class="donut-center">
+              <div class="donut-center-label" id="donutLabel">總資產</div>
+              <div class="donut-center-pct" id="donutPct">100%</div>
+              <div class="donut-center-val" id="donutVal">—</div>
+            </div>
+          </div>
+          <div class="legend-list" id="pieLegend"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="section-head">
+          <div>
+            <div class="section-title">淨值成長與部位歷史趨勢</div>
+            <div class="section-sub" id="histSubTitle">自動過濾 GOOGLEFINANCE 偶發 #N/A 斷點</div>
+          </div>
+          <div class="seg-group" id="histRangeGroup">
+            <button class="seg-btn" data-days="30" type="button">1M</button>
+            <button class="seg-btn" data-days="90" type="button">3M</button>
+            <button class="seg-btn" data-days="180" type="button">6M</button>
+            <button class="seg-btn active" data-days="9999" type="button">全部</button>
+          </div>
+        </div>
+
+        <div class="chart-box" id="historyChartBox">
+          <canvas id="historyCanvas"></canvas>
+          <div class="chart-tooltip" id="historyTooltip"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Row 2: Asset-by-Asset ROI & Holdings + Trade Log -->
+    <section class="card">
+      <div class="section-head">
+        <div>
+          <div class="section-title">各資產成本、市值與確切報酬率明細</div>
+          <div class="section-sub">
+            支援結合 Google Sheet《整體財務狀況》之「期初未記錄股數 / 期初成本均價」欄位與《台股/美股交易明細》自動以移動平均成本法精算確切報酬率
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+          <div class="seg-group" id="assetTabGroup">
+            <button class="seg-btn active" data-tab="open" type="button">目前持倉報酬率</button>
+            <button class="seg-btn" data-tab="realized" type="button">已實現交易損益</button>
+            <button class="seg-btn" data-jump-trades="1" type="button">🧾 區間交易查詢 →</button>
+          </div>
+          <div class="seg-group" id="catFilterGroup">
+            <button class="seg-btn active" data-cat="ALL" type="button">全部</button>
+            <button class="seg-btn" data-cat="台股" type="button">台股</button>
+            <button class="seg-btn" data-cat="美股" type="button">美股</button>
+            <button class="seg-btn" data-cat="現金" type="button">現金</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Visual ROI Ranking Cards -->
+      <div class="roi-bars" id="roiRankingCards"></div>
+
+      <!-- Tab 1: Open Holdings ROI Table -->
+      <div id="openHoldingsContainer">
+        <div class="table-wrap desktop-only-table">
+          <table>
+            <thead>
+              <tr>
+                <th data-sort="name">資產項目 ⇅</th>
+                <th class="num" data-sort="qty">持有單位 ⇅</th>
+                <th class="num">平均成本 (原幣)</th>
+                <th class="num">目前市價</th>
+                <th class="num" data-sort="costTwd">投入總成本 (TWD) ⇅</th>
+                <th class="num" data-sort="valueTwd">目前市值 (TWD) ⇅</th>
+                <th class="num" data-sort="pnlTwd">未實現損益 (TWD) ⇅</th>
+                <th class="num" data-sort="roiPct">報酬率 (%) ⇅</th>
+                <th class="num" data-sort="weight">佔比 ⇅</th>
+                <th class="num">快速同步</th>
+              </tr>
+            </thead>
+            <tbody id="holdingsTbody"></tbody>
+          </table>
+        </div>
+        <div class="mobile-card-list" id="mobileHoldingsList"></div>
+      </div>
+
+      <!-- Tab 2: Realized Trades Container -->
+      <div id="realizedContainer" style="display:none;">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>標的代碼</th>
+                <th>市場</th>
+                <th class="num">累積買入股數</th>
+                <th class="num">累積賣出股數</th>
+                <th class="num">買入均價</th>
+                <th class="num">賣出均價</th>
+                <th class="num">已實現損益 / 賣出總額</th>
+                <th class="num">已實現報酬率</th>
+                <th>狀態說明</th>
+              </tr>
+            </thead>
+            <tbody id="realizedTbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Tab 3: Recent Trade Logs from Google Sheet -->
+      <div id="logsContainer" style="display:none;">
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>工作表列號</th>
+                <th>日期</th>
+                <th>市場</th>
+                <th>買/賣</th>
+                <th>交易性質</th>
+                <th>股票代碼</th>
+                <th class="num">成交價格</th>
+                <th class="num">成交股數</th>
+                <th class="num">總金額</th>
+                <th>備註 / 操作</th>
+              </tr>
+            </thead>
+            <tbody id="logsTbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Row 3: Company RSU Schedule + Monthly Salary & Allocation -->
+    <section class="grid-bottom" id="gridBottomSection">
+      <div class="card" id="rsuCard">
+        <div class="section-head">
+          <div>
+            <div class="section-title" id="rsuCardTitle">公司股票 (RSU) 歸屬進度與預估價值</div>
+            <div class="section-sub" id="rsuSummarySub">—</div>
+          </div>
+          <span class="badge badge-info" id="nextVestBadge">—</span>
+        </div>
+        <div class="rsu-year-bars" id="rsuYearBars"></div>
+      </div>
+
+      <div class="card" id="salaryCard">
+        <div class="section-head">
+          <div>
+            <div class="section-title">每月薪資結構與現金流分配</div>
+            <div class="section-sub" id="salarySub">—</div>
+          </div>
+          <span class="badge badge-pos" id="investRateBadge">—</span>
+        </div>
+        <div class="stacked-bar" id="cashflowStackedBar"></div>
+        <div class="cashflow-list" id="cashflowList"></div>
+      </div>
+    </section>
+    </div><!-- /#overviewPageView -->
+
+    <!-- ==================== PAGE 2: TRADE HISTORY EXPLORER ==================== -->
+    <div id="tradesPageView" style="display:none;">
+      <section class="card" style="margin-bottom:18px;">
+        <div class="section-head" style="margin-bottom:14px;">
+          <div>
+            <div class="section-title">台股 / 美股區間買賣交易紀錄查詢</div>
+            <div class="section-sub">
+              直接讀取《台股交易明細》與《美股交易明細》，支援快速切換 1M / 3M / 6M / 1Y / 全部或自訂起訖日期，並依市場、買賣方向與標的篩選
+            </div>
+          </div>
+          <button type="button" class="btn btn-xs" id="trResetBtn">重設篩選條件</button>
+        </div>
+
+        <div class="filter-grid">
+          <div class="filter-block">
+            <span class="filter-label">時間區間快選</span>
+            <div class="seg-group" id="trRangeGroup">
+              <button type="button" class="seg-btn" data-trange="1M">1M</button>
+              <button type="button" class="seg-btn" data-trange="3M">3M</button>
+              <button type="button" class="seg-btn active" data-trange="6M">6M</button>
+              <button type="button" class="seg-btn" data-trange="1Y">1Y</button>
+              <button type="button" class="seg-btn" data-trange="ALL">全部</button>
+              <button type="button" class="seg-btn" data-trange="CUSTOM">自訂</button>
+            </div>
+          </div>
+
+          <div class="filter-block">
+            <span class="filter-label">自訂起訖日期</span>
+            <div class="date-range-inputs">
+              <input type="date" id="trStartDate" aria-label="起始日期" />
+              <span style="color:var(--text-muted);font-size:12px;">至</span>
+              <input type="date" id="trEndDate" aria-label="結束日期" />
+            </div>
+          </div>
+
+          <div class="filter-block">
+            <span class="filter-label">交易市場</span>
+            <div class="seg-group" id="trMarketGroup">
+              <button type="button" class="seg-btn active" data-tmarket="ALL">全部市場</button>
+              <button type="button" class="seg-btn" data-tmarket="台股">🇹🇼 台股</button>
+              <button type="button" class="seg-btn" data-tmarket="美股">🇺🇸 美股</button>
+            </div>
+          </div>
+
+          <div class="filter-block">
+            <span class="filter-label">買賣方向</span>
+            <div class="seg-group" id="trSideGroup">
+              <button type="button" class="seg-btn active" data-tside="ALL">全部買賣</button>
+              <button type="button" class="seg-btn" data-tside="買入">買入</button>
+              <button type="button" class="seg-btn" data-tside="賣出">賣出</button>
+            </div>
+          </div>
+
+          <div class="filter-block">
+            <span class="filter-label">指定標的</span>
+            <select id="trTickerSelect" class="inline-select">
+              <option value="ALL">全部股票標的</option>
+            </select>
+          </div>
+
+          <div class="filter-block">
+            <span class="filter-label">交易性質</span>
+            <select id="trKindSelect" class="inline-select">
+              <option value="ALL">全部性質</option>
+              <option value="定期定額">定期定額</option>
+              <option value="一次">一次買入 / 賣出</option>
+              <option value="股息">股息再投入 / 股利</option>
+            </select>
+          </div>
+
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-muted);cursor:pointer;padding-bottom:6px;">
+            <input type="checkbox" id="trIncludePending" checked style="width:15px;height:15px;accent-color:var(--accent);" />
+            <span>顯示待成交預填列</span>
+          </label>
+        </div>
+      </section>
+
+      <!-- Period Summary KPIs -->
+      <section class="kpi-grid" style="margin-bottom:18px;">
+        <div class="card">
+          <div class="kpi-label">
+            <span>所選區間交易筆數</span>
+            <span class="badge badge-info" id="trPeriodLabelBadge">—</span>
+          </div>
+          <div class="kpi-value" id="trKpiCount">0 筆</div>
+          <div class="kpi-foot" id="trKpiCountSub">—</div>
+        </div>
+
+        <div class="card">
+          <div class="kpi-label">
+            <span>區間買入總金額 (折合 TWD)</span>
+            <span class="badge badge-pos">買入投入</span>
+          </div>
+          <div class="kpi-value" id="trKpiBuyTwd" style="color:var(--pos);">—</div>
+          <div class="kpi-foot" id="trKpiBuySub">—</div>
+        </div>
+
+        <div class="card">
+          <div class="kpi-label">
+            <span>區間賣出總回收 (折合 TWD)</span>
+            <span class="badge badge-neg">賣出變現</span>
+          </div>
+          <div class="kpi-value" id="trKpiSellTwd">—</div>
+          <div class="kpi-foot" id="trKpiSellSub">—</div>
+        </div>
+
+        <div class="card">
+          <div class="kpi-label">
+            <span>區間淨投入資金流</span>
+            <span class="badge badge-info" id="trKpiNetBadge">—</span>
+          </div>
+          <div class="kpi-value" id="trKpiNetTwd">—</div>
+          <div class="kpi-foot" id="trKpiNetSub">—</div>
+        </div>
+      </section>
+
+      <!-- Filtered Trade Table Card -->
+      <section class="card">
+        <div class="section-head" style="margin-bottom:12px;">
+          <div>
+            <div class="section-title">區間交易明細列表</div>
+            <div class="section-sub">點擊下方任一標的標籤可快速單獨檢視該檔股票；點擊「日期」或「折合台幣」表頭可切換排序方向</div>
+          </div>
+          <button type="button" class="btn btn-write btn-xs" id="trQuickAddBtn">＋ 新增一筆交易</button>
+        </div>
+
+        <div class="ticker-summary-strip" id="trTickerSummaryStrip"></div>
+
+        <div class="table-wrap desktop-only-table">
+          <table>
+            <thead>
+              <tr>
+                <th id="trSortDateTh" style="cursor:pointer;">交易日期 ↓</th>
+                <th>市場</th>
+                <th>買 / 賣</th>
+                <th>交易性質</th>
+                <th>股票代碼</th>
+                <th class="num">成交單價 (原幣)</th>
+                <th class="num">成交股數</th>
+                <th class="num">原幣總額</th>
+                <th class="num" id="trSortAmtTh" style="cursor:pointer;">折合台幣 (TWD) ⇅</th>
+                <th>試算表位置 / 備註</th>
+              </tr>
+            </thead>
+            <tbody id="trResultsTbody"></tbody>
+          </table>
+        </div>
+        <div class="mobile-card-list" id="mobileTradesList"></div>
+
+        <div id="trEmptyState" style="display:none;padding:36px 16px;text-align:center;color:var(--text-muted);font-size:14px;">
+          此時間區間與篩選條件下沒有符合的交易紀錄。
+        </div>
+      </section>
+    </div><!-- /#tradesPageView -->
+
+    <!-- ==================== PAGE 3: SMART REBALANCING & TARGET LEVERAGE ==================== -->
+    <div id="rebalancePageView" style="display:none;">
+      <section class="card" style="margin-bottom:18px;">
+        <div class="section-head">
+          <div>
+            <div class="section-title">🔄 智慧資產再平衡 & 新資金配置計算機</div>
+            <div class="section-sub">
+              設定理想的台股 / 美股 / 現金目標比例，系統會自動計算本月新投入資金應優先買進哪幾檔低配標的（免賣股省稅），或完整買賣再平衡股數
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <div class="quick-chips" id="rebPresetChips" style="margin-top:0;">
+              <button type="button" class="chip" data-rebpreset="current">📌 套用目前比例</button>
+              <button type="button" class="chip" data-rebpreset="45_45_10">🌏 台美均衡 45/45/10</button>
+              <button type="button" class="chip" data-rebpreset="50_45_5">🚀 積極成長 50/45/5</button>
+              <button type="button" class="chip" data-rebpreset="40_40_20">🛡️ 穩健配置 40/40/20</button>
+            </div>
+            <button type="button" class="btn btn-xs" id="rebNormalizeBtn">正規化 100%</button>
+            <button type="button" class="btn btn-write btn-xs" id="rebSaveTargetsBtn">💾 儲存目標設定</button>
+          </div>
+        </div>
+
+        <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:12px;padding:12px 14px;background:var(--bg-elev);border:1px solid var(--border);border-radius:12px;min-width:0;max-width:100%;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0;max-width:100%;flex:1 1 280px;">
+            <span class="filter-label" style="font-size:13px;color:var(--text);">執行方式：</span>
+            <div class="seg-group" id="rebModeGroup" style="background:var(--card);">
+              <button type="button" class="seg-btn active" data-rebmode="inflow">💡 僅用新資金買入 (免賣股省稅)</button>
+              <button type="button" class="seg-btn" data-rebmode="full">🔄 完整買賣再平衡 (高賣低買)</button>
+            </div>
+          </div>
+
+          <div id="rebInflowInputWrap" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0;max-width:100%;">
+            <label for="rebNewCashInput" style="font-size:13px;font-weight:600;color:var(--text-muted);">預計投入新資金 (TWD)：</label>
+            <input type="number" step="1000" min="0" id="rebNewCashInput" class="reb-num-input" style="width:128px;" />
+            <button type="button" class="btn btn-xs" id="rebUseMonthlyBudgetBtn" title="帶入《每月收入分配》中的每月投資金額">帶入月投資額</button>
+          </div>
+
+          <span class="badge badge-info" id="rebSumPctBadge">目標合計 100.0%</span>
+        </div>
+
+        <!-- 3 Category Cards with Sliders & Drift Indicators -->
+        <div class="reb-grid-3">
+          <div class="reb-cat-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-weight:700;font-size:15px;">🇹🇼 台股部位目標 (%)</span>
+              <span class="badge badge-info" id="rebTwDriftBadge">—</span>
+            </div>
+            <div class="reb-slider-row">
+              <input type="range" min="0" max="100" step="1" id="rebTwRange" />
+              <input type="number" min="0" max="100" step="0.5" id="rebTwInput" class="reb-num-input" />
+            </div>
+            <div id="rebTwSummary" style="font-size:12.5px;color:var(--text-muted);line-height:1.6;">—</div>
+          </div>
+
+          <div class="reb-cat-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+              <span style="font-weight:700;font-size:15px;">🇺🇸 美股部位目標 (%)</span>
+              <span class="badge badge-info" id="rebUsDriftBadge">—</span>
+            </div>
+            <div class="reb-slider-row">
+              <input type="range" min="0" max="100" step="1" id="rebUsRange" />
+              <input type="number" min="0" max="100" step="0.5" id="rebUsInput" class="reb-num-input" />
+            </div>
+            <div id="rebUsSummary" style="font-size:12.5px;color:var(--text-muted);line-height:1.6;">—</div>
+          </div>
+
+          <div class="reb-cat-card">
+            <div style="display:flex;justify-content:justify-between;align-items:center;justify-content:space-between;">
+              <span style="font-weight:700;font-size:15px;">💵 現金與外幣目標 (%)</span>
+              <span class="badge badge-info" id="rebCashDriftBadge">—</span>
+            </div>
+            <div class="reb-slider-row">
+              <input type="range" min="0" max="100" step="1" id="rebCashRange" />
+              <input type="number" min="0" max="100" step="0.5" id="rebCashInput" class="reb-num-input" />
+            </div>
+            <div id="rebCashSummary" style="font-size:12.5px;color:var(--text-muted);line-height:1.6;">—</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Two-column: Actionable Order List + Target Leverage Tuner -->
+      <section class="grid-2" style="grid-template-columns: 1.35fr 1fr;">
+        <div class="card">
+          <div class="section-head">
+            <div>
+              <div class="section-title">📋 建議執行明細（依目前各標的權重智慧拆單）</div>
+              <div class="section-sub" id="rebOrderSubTitle">自動排除 RSU 配股，依最新即時市價與匯率換算建議買賣股數</div>
+            </div>
+          </div>
+          <div class="table-wrap desktop-only-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>標的名稱</th>
+                  <th>類別</th>
+                  <th class="num">目前市值</th>
+                  <th class="num">建議動作與金額</th>
+                  <th class="num">折合股數 (依現價)</th>
+                  <th class="num">調整後佔比</th>
+                  <th class="num">快捷記帳</th>
+                </tr>
+              </thead>
+              <tbody id="rebOrdersTbody"></tbody>
+            </table>
+          </div>
+          <div class="mobile-card-list" id="mobileRebOrdersList"></div>
+        </div>
+
+        <div class="card">
+          <div class="section-head">
+            <div>
+              <div class="section-title">⚡ 目標實質槓桿倍數調節器</div>
+              <div class="section-sub">不動用額外現金，試算透過「原型 ETF ↔ 2倍槓桿 ETF」等額換股精準調整整體曝險倍數</div>
+            </div>
+            <span class="badge badge-warn" id="rebCurLevBadge">目前 1.000x</span>
+          </div>
+
+          <div class="reb-cat-card" style="margin-bottom:14px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+              <label for="rebTargetLevInput" style="font-weight:700;font-size:14px;">目標實質槓桿倍數 (x)</label>
+              <div class="quick-chips" id="rebLevPresetChips" style="margin-top:0;">
+                <button type="button" class="chip" data-lev="1.00">1.00x (無槓桿)</button>
+                <button type="button" class="chip" data-lev="1.10">1.10x</button>
+                <button type="button" class="chip" data-lev="1.20">1.20x</button>
+                <button type="button" class="chip" data-lev="1.30">1.30x</button>
+              </div>
+            </div>
+            <div class="reb-slider-row" style="margin-top:4px;">
+              <input type="range" min="0.80" max="1.60" step="0.01" id="rebTargetLevRange" />
+              <input type="number" min="0.50" max="2.00" step="0.01" id="rebTargetLevInput" class="reb-num-input" />
+            </div>
+          </div>
+
+          <div id="rebLevPlanBox" style="display:flex;flex-direction:column;gap:10px;font-size:13px;line-height:1.6;"></div>
+        </div>
+      </section>
+    </div><!-- /#rebalancePageView -->
+
+    <!-- ==================== PAGE 4: XIRR VS BENCHMARK COMPARISON ==================== -->
+    <div id="xirrPageView" style="display:none;">
+      <section class="card" style="margin-bottom:18px;">
+        <div class="section-head" style="margin-bottom:12px;">
+          <div>
+            <div class="section-title">📈 真實投資報酬率（XIRR）vs. 同現金流大盤基準對決</div>
+            <div class="section-sub">
+              自動剔除每月新投入本金與新歸屬 RSU 的規模膨脹影響，模擬「若每一筆錢在完全相同的日期改買大盤指數 ETF」誰賺得更多
+            </div>
+          </div>
+        </div>
+
+        <div class="filter-grid">
+          <div class="filter-block">
+            <span class="filter-label">評估區間與資料範圍</span>
+            <div class="seg-group" id="xirrScopeGroup">
+              <button type="button" class="seg-btn active" data-xscope="HIST_ALL">歷史紀錄全區間</button>
+              <button type="button" class="seg-btn" data-xscope="HIST_180">近 6M</button>
+              <button type="button" class="seg-btn" data-xscope="HIST_90">近 3M</button>
+              <button type="button" class="seg-btn" data-xscope="HIST_30">近 1M</button>
+              <button type="button" class="seg-btn" data-xscope="TRADES_ALL">純交易明細 (首筆買賣起)</button>
+            </div>
+          </div>
+
+          <div class="filter-block">
+            <span class="filter-label">走勢圖主對照基準（皆以台幣計價含匯率波動）</span>
+            <div class="seg-group" id="xirrBenchGroup">
+              <button type="button" class="seg-btn active" data-xbench="BLEND_50_50">50% 0050 + 50% VT (台美均衡)</button>
+              <button type="button" class="seg-btn" data-xbench="TPE:0050">0050 (台灣50)</button>
+              <button type="button" class="seg-btn" data-xbench="VT">VT (全球股市)</button>
+              <button type="button" class="seg-btn" data-xbench="VOO">VOO (標普500)</button>
+              <button type="button" class="seg-btn" data-xbench="QQQ">QQQ (納指100)</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- XIRR 4 KPI Cards -->
+      <section class="kpi-grid">
+        <div class="card">
+          <div class="kpi-label">
+            <span>你的組合年化報酬 (XIRR)</span>
+            <span class="badge badge-pos" id="xirrPortSimpleBadge">—</span>
+          </div>
+          <div class="kpi-value" id="xirrPortVal">—</div>
+          <div class="kpi-foot" id="xirrPortFoot">—</div>
+        </div>
+
+        <div class="card">
+          <div class="kpi-label">
+            <span id="xirrBenchCardLabel">同現金流買大盤 XIRR</span>
+            <span class="badge badge-info" id="xirrBenchSimpleBadge">—</span>
+          </div>
+          <div class="kpi-value" id="xirrBenchVal">—</div>
+          <div class="kpi-foot" id="xirrBenchFoot">—</div>
+        </div>
+
+        <div class="card">
+          <div class="kpi-label">
+            <span>超額報酬 Alpha (對比基準)</span>
+            <span class="badge badge-pos" id="xirrAlphaBadge">—</span>
+          </div>
+          <div class="kpi-value" id="xirrAlphaDiffTwd">—</div>
+          <div class="kpi-foot" id="xirrAlphaFoot">—</div>
+        </div>
+
+        <div class="card">
+          <div class="kpi-label">
+            <span>區間淨投入本金 vs 實質獲利</span>
+            <span class="badge badge-info" id="xirrCashflowCountBadge">—</span>
+          </div>
+          <div class="kpi-value" id="xirrNetProfitTwd">—</div>
+          <div class="kpi-foot" id="xirrInvestedFoot">—</div>
+        </div>
+      </section>
+
+      <!-- Interactive Portfolio vs Shadow Benchmark Curve -->
+      <section class="card" style="margin-bottom:18px;">
+        <div class="section-head">
+          <div>
+            <div class="section-title" id="xirrChartTitle">實際股票部位市值 vs. 同現金流模擬買入大盤走勢</div>
+            <div class="section-sub" id="xirrChartSub">滑鼠移過曲線可檢視每日實際市值、大盤模擬市值與累積超額報酬 (Alpha)</div>
+          </div>
+          <div style="display:flex;gap:14px;font-size:12.5px;font-weight:600;align-items:center;">
+            <span style="color:var(--accent);">● 你的實際投資組合</span>
+            <span style="color:#f59e0b;">- - 同現金流買入基準指數</span>
+          </div>
+        </div>
+        <div class="chart-box" id="xirrChartBox" style="height:300px;">
+          <canvas id="xirrCanvas"></canvas>
+          <div class="chart-tooltip" id="xirrTooltip"></div>
+        </div>
+      </section>
+
+      <!-- Two Tables: All 5 Benchmarks Side-by-Side + Individual Ticker XIRR -->
+      <section class="grid-2" style="grid-template-columns: 1fr 1.15fr;">
+        <div class="card">
+          <div class="section-head">
+            <div>
+              <div class="section-title">🏆 五大基準指數同場對決總表</div>
+              <div class="section-sub">假設期初資產與每一筆加減碼都在同一天改買下列指數之期末結果</div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>對照組合 / 指數</th>
+                  <th class="num">模擬期末市值</th>
+                  <th class="num">年化 XIRR</th>
+                  <th class="num">你領先 / 落後金額</th>
+                </tr>
+              </thead>
+              <tbody id="xirrAllBenchTbody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="section-head">
+            <div>
+              <div class="section-title">📊 個別交易標的資金加權 XIRR 排行</div>
+              <div class="section-sub">依《台股/美股交易明細》各檔股票實際買賣日期＋目前持倉市值獨立計算之年化 XIRR</div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>標的代碼</th>
+                  <th>市場</th>
+                  <th class="num">累積投入 (TWD)</th>
+                  <th class="num">回收＋現值 (TWD)</th>
+                  <th class="num">淨損益 (TWD)</th>
+                  <th class="num">年化 XIRR</th>
+                </tr>
+              </thead>
+              <tbody id="xirrTickerTbody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </div><!-- /#xirrPageView -->
+
+    <!-- ==================== PAGE 5: AUTOMATED MONTHLY FINANCIAL REPORT ==================== -->
+    <div id="reportPageView" style="display:none;">
+      <section class="card" style="margin-bottom:20px;">
+        <div class="section-head" style="margin-bottom:12px;">
+          <div>
+            <div class="section-title">📬 自動化個人財務月報（預覽・測試寄信・每月 1 號雲端定時寄送）</div>
+            <div class="section-sub">
+              自動彙整單月淨值成長、最大回撤、三大資產與槓桿比、當月買賣明細、XIRR 績效與下月 RSU / 定期定額提醒
+            </div>
+          </div>
+          <span class="badge badge-info" id="repScheduleStatusBadge">檢查雲端排程中...</span>
+        </div>
+
+        <div class="filter-grid" style="justify-content:space-between;">
+          <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+            <div class="filter-block">
+              <label class="filter-label" for="repMonthSelect">選擇預覽／寄送月份</label>
+              <select class="inline-select" id="repMonthSelect" style="min-width:170px;"></select>
+            </div>
+
+            <div class="filter-block">
+              <label class="filter-label" for="repEmailInput">收件 Gmail 信箱</label>
+              <input type="email" id="repEmailInput" placeholder="例如 yourname@gmail.com" style="padding:7px 12px;border-radius:10px;border:1px solid var(--border-strong);background:var(--bg-elev);color:var(--text);font-size:13.5px;min-width:240px;font-family:inherit;" />
+            </div>
+          </div>
+
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <button type="button" class="btn" id="repCopyHtmlBtn">📋 複製月報摘要文字</button>
+            <button type="button" class="btn btn-write" id="repSendNowBtn">✉️ 立即寄送此月報到信箱</button>
+            <button type="button" class="btn" id="repToggleTriggerBtn">⏰ 啟用每月 1 號自動寄信</button>
+          </div>
+        </div>
+
+        <div id="repLocalhostNotice" class="helper-box" style="margin-top:12px;display:none;">
+          <span>💡 <b>提示</b>：目前您正在 Localhost 預覽月報。將最新版 <code>Code.gs</code> 與 <code>Index.html</code> 更新至 Google Sheet 的 Apps Script 後，在<b>雲端版</b>打開本分頁即可直接點擊「立即寄送」並開啟「Google 雲端每月 1 號早上 08:00 自動寄信排程」（電腦關機也會準時寄出！）。</span>
+        </div>
+      </section>
+
+      <!-- Live Rendered Executive Monthly Report Preview -->
+      <div class="report-paper" id="repPaperPreview"></div>
+    </div><!-- /#reportPageView -->
+  </div>
+
+  <!-- Write to Google Sheet Modal -->
+  <div class="modal-backdrop" id="writeModal">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-header">
+        <div>
+          <h2 id="modalTitle" style="font-size:18px;font-weight:700;">同步寫入資料至 Google Sheet</h2>
+          <div style="font-size:12.5px;color:var(--text-muted);margin-top:2px;">
+            直接寫入《財務狀況總整理》對應分頁，並即時重算 GOOGLEFINANCE、SUMIFS 與確切報酬率
+          </div>
+        </div>
+        <button class="modal-close" id="closeModalBtn" type="button" aria-label="關閉">✕</button>
+      </div>
+
+      <div class="seg-group" id="modalModeGroup" style="width:100%;display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:4px;">
+        <button class="seg-btn active" data-wmode="trade" type="button">📈 新增股票買賣</button>
+        <button class="seg-btn" data-wmode="initcost" type="button">📌 期初未記錄成本</button>
+        <button class="seg-btn" data-wmode="cash" type="button">🏦 更新現金餘額</button>
+        <button class="seg-btn" data-wmode="dca" type="button">⏳ 待成交定期定額 (<span id="pendingDcaCount">0</span>)</button>
+      </div>
+
+      <!-- Subform 1: Stock Trade -->
+      <form id="tradeForm" style="margin-top:14px;">
+        <div class="form-grid">
+          <div class="field">
+            <label for="fMarket">交易市場（目標工作表）</label>
+            <select id="fMarket">
+              <option value="TW">🇹🇼 台股（寫入：台股交易明細）</option>
+              <option value="US">🇺🇸 美股（寫入：美股交易明細）</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label>買進 / 賣出</label>
+            <div class="side-switch">
+              <button type="button" class="side-btn active-buy" id="btnSideBuy">買進 (買入)</button>
+              <button type="button" class="side-btn" id="btnSideSell">賣出</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="fTradeType">交易性質</label>
+            <select id="fTradeType"></select>
+          </div>
+
+          <div class="field">
+            <label for="fDate">交易日期</label>
+            <input type="date" id="fDate" required />
+          </div>
+
+          <div class="field form-full">
+            <label for="fTicker">股票代碼（自動列出試算表內標的，也可直接輸入任何新股票代碼）</label>
+            <input type="text" id="fTicker" placeholder="例如 TPE:0050、2454、QQQ、NVDA..." required />
+            <div class="quick-chips" id="tickerQuickChips"></div>
+            <div id="tickerHoldingHint" style="font-size:12px;color:var(--text-muted);margin-top:6px;"></div>
+          </div>
+
+          <!-- Dynamic New Stock Auto-Onboarding Box -->
+          <div class="form-full new-ticker-box" id="newTickerBox">
+            <div style="font-size:13px;font-weight:700;color:var(--accent);">
+              ✨ 偵測到全新標的：《整體財務狀況》尚無此股票
+            </div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer;">
+              <input type="checkbox" id="fAddToOverview" checked style="width:16px;height:16px;accent-color:var(--accent);" />
+              <span>自動在《整體財務狀況》插入新列，並掛上 <code>SUMIFS</code> 股數公式與 <code>GOOGLEFINANCE</code> 即時報價（自動擴充總資產加總範圍）</span>
+            </label>
+            <div id="newTickerExtraFields" style="display:grid;grid-template-columns:1.2fr 1fr;gap:10px;align-items:center;">
+              <input type="text" id="fDisplayName" placeholder="選填總表顯示名稱（如：聯發科2454 / 輝達 NVDA）" style="padding:7px 10px;border-radius:8px;border:1px solid var(--border-strong);background:var(--bg-elev);color:var(--text);font-size:12.5px;" />
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer;">
+                <input type="checkbox" id="fIsLeveraged2x" style="width:15px;height:15px;accent-color:var(--accent);" />
+                <span>此為 2 倍槓桿 ETF（納入槓桿比計算）</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="field">
+            <label for="fPrice" id="lblPrice">成交股價 (TWD)</label>
+            <input type="number" step="any" min="0" id="fPrice" placeholder="例如 103.2" />
+          </div>
+
+          <div class="field">
+            <label for="fShares">成交股數（美股支援小數股）</label>
+            <input type="number" step="any" min="0" id="fShares" placeholder="例如 1000" />
+          </div>
+
+          <div class="field">
+            <label for="fAmount" id="lblAmount">扣款 / 交割總金額 (TWD)</label>
+            <input type="number" step="any" min="0" id="fAmount" placeholder="依股價×股數自動計算，可微調" />
+          </div>
+
+          <div class="field" id="feeFieldWrap">
+            <label for="fFee">手續費 (TWD)</label>
+            <input type="number" step="any" min="0" id="fFee" value="1" />
+          </div>
+
+          <div class="field form-full" id="dcaFormulaWrap" style="display:none;">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--text);">
+              <input type="checkbox" id="fUseDcaFormula" style="width:16px;height:16px;accent-color:var(--accent);" />
+              <span>成交股數欄位寫入公式 <code>=IF(F=0, 0, FLOOR(E/F))</code>（與試算表定期定額格式一致；若股價留空即建立待成交預填列）</span>
+            </label>
+          </div>
+
+          <div class="field form-full" id="staticSyncWrap" style="display:none;">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--text);">
+              <input type="checkbox" id="fSyncStatic" checked style="width:16px;height:16px;accent-color:var(--accent);" />
+              <span id="staticSyncText">同步更新《整體財務狀況》中的固定持有股數欄位</span>
+            </label>
+          </div>
+
+          <div class="field form-full" id="noteFieldWrap">
+            <label for="fNote">備註（選填）</label>
+            <input type="text" id="fNote" placeholder="例如：逢低加碼、獲利調節..." />
+          </div>
+        </div>
+
+        <div class="preview-card" id="tradePreviewBox"></div>
+
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">
+          <button type="button" class="btn" id="cancelTradeBtn">取消</button>
+          <button type="submit" class="btn btn-write" id="submitTradeBtn">✓ 確認寫入 Google Sheet</button>
+        </div>
+      </form>
+
+      <!-- Subform 2: Cash Balance Update -->
+      <form id="cashForm" style="display:none;margin-top:14px;">
+        <div class="form-grid">
+          <div class="field form-full">
+            <label for="cAccount">選擇《整體財務狀況》現金帳戶</label>
+            <select id="cAccount"></select>
+          </div>
+
+          <div class="field">
+            <label for="cAmount" id="lblCashAmount">最新帳戶餘額 (TWD)</label>
+            <input type="number" step="any" min="0" id="cAmount" required placeholder="輸入最新存款數字" />
+          </div>
+
+          <div class="field">
+            <label for="cNote">更新備註（選填）</label>
+            <input type="text" id="cNote" placeholder="例如：2026/11/11更新" />
+          </div>
+        </div>
+
+        <div class="preview-card" id="cashPreviewBox" style="margin-top:14px;">
+          外幣帳戶（日圓活存、美金活存）只需輸入原幣金額（JPY / USD），系統會自動保留試算表內的 <code>GOOGLEFINANCE</code> 即時匯率換算公式。
+        </div>
+
+        <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">
+          <button type="button" class="btn" id="cancelCashBtn">取消</button>
+          <button type="submit" class="btn btn-write" id="submitCashBtn">✓ 更新現金餘額至 Google Sheet</button>
+        </div>
+      </form>
+
+      <!-- Subform 3: Pending DCA Fill -->
+      <div id="dcaPendingPanel" style="display:none;margin-top:16px;">
+        <div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">
+          以下為《台股交易明細》中已預先建立但「當日買入股價」尚為空白的定期定額紀錄，填入成交價即可自動觸發試算表股數公式：
+        </div>
+        <div id="dcaPendingList" style="display:flex;flex-direction:column;gap:10px;"></div>
+      </div>
+
+      <!-- Subform 4: Pre-Sheet Initial Holding Cost Basis (Header-driven columns) -->
+      <form id="initCostForm" style="display:none;margin-top:14px;">
+        <div style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">
+          針對開始使用此 Google Sheet 記帳前就已買入的既有持股（如 <code>0050</code> 期初部位、<code>2330</code>），將「期初未記錄股數」與「期初成本均價」寫入《整體財務狀況》對應標題欄（預設為 G / H 欄，若已重排或新增自訂欄位會自動依標題列定位），系統會結合後續買賣紀錄以<b>移動平均成本法</b>精算確切報酬率：
+        </div>
+
+        <div class="form-grid">
+          <div class="field form-full">
+            <label for="icHolding">選擇《整體財務狀況》股票部位</label>
+            <select id="icHolding"></select>
+          </div>
+
+          <div class="form-full preview-card" id="icDiagnosticBox" style="margin-top:0;"></div>
+
+          <div class="field">
+            <label for="icInitQty" id="lblIcInitQty">期初未記錄股數（現制分割後股數）</label>
+            <input type="number" step="any" min="0" id="icInitQty" placeholder="例如 1000" required />
+          </div>
+
+          <div class="field">
+            <label for="icInitAvgCost" id="lblIcInitAvgCost">期初成本均價 (TWD)</label>
+            <input type="number" step="any" min="0" id="icInitAvgCost" placeholder="例如 42.50" />
+          </div>
+
+          <!-- Optional Helpers: Pre-split converter & Broker current avg back-solver -->
+          <div class="form-full helper-box" id="icSplitHelperBox" style="display:none;">
+            <div style="font-weight:700;color:var(--accent);" id="icSplitHelperTitle">💡 只記得分割前的買入均價？</div>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;">
+              <input type="number" step="any" min="0" id="icPreSplitInput" placeholder="輸入分割前均價（如 170）" style="flex:1;min-width:170px;padding:7px 10px;border-radius:8px;border:1px solid var(--border-strong);background:var(--card);color:var(--text);font-size:13px;" />
+              <button type="button" class="btn btn-xs" id="btnApplyPreSplit">換算帶入分割後均價</button>
+            </div>
+          </div>
+
+          <div class="form-full helper-box" id="icBrokerBacksolveBox" style="display:none;">
+            <div style="font-weight:700;color:var(--pos);">🧮 或是直接從「目前券商 App 顯示的總庫存均價」自動反推？</div>
+            <div style="color:var(--text-muted);font-size:12px;">
+              若不確定當初記帳前的買價，只要輸入今天券商 App 顯示的該股「目前總庫存均價」，系統會自動扣除《交易明細》歷次買賣紀錄，精準反推出對應的期初均價（未來新交易仍可自動滾動更新成本！）：
+            </div>
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;">
+              <input type="number" step="any" min="0" id="icBrokerCurrentAvg" placeholder="輸入目前券商 App 顯示的庫存均價" style="flex:1;min-width:190px;padding:7px 10px;border-radius:8px;border:1px solid var(--border-strong);background:var(--card);color:var(--text);font-size:13px;" />
+              <button type="button" class="btn btn-xs" id="btnBacksolveInitCost">反推期初均價並帶入</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="preview-card" id="icPreviewBox"></div>
+
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:18px;flex-wrap:wrap;">
+          <button type="button" class="btn btn-xs" id="clearInitCostBtn" style="color:var(--neg);">清除此標的期初均價</button>
+          <div style="display:flex;gap:10px;">
+            <button type="button" class="btn" id="cancelInitCostBtn">取消</button>
+            <button type="submit" class="btn btn-write" id="submitInitCostBtn">✓ 儲存期初成本至 Google Sheet</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Apps Script Export Modal (Localhost Helper) -->
+  <div class="modal-backdrop" id="gasExportModal" style="z-index:120;">
+    <div class="modal-panel" style="max-width:620px;">
+      <div class="modal-header">
+        <div>
+          <div style="font-size:17px;font-weight:700;">☁️ 30 秒建好我的 Google Sheet（Apps Script ＋ 一鍵初始化）</div>
+          <div style="font-size:12.5px;color:var(--text-muted);margin-top:3px;">
+            零寫死試算表 ID 與股票清單：任何人只要貼進自己同格式的 Google Sheet，就會自動綁定對方的試算表！
+          </div>
+        </div>
+        <button class="modal-close" id="closeGasModalBtn" type="button">✕</button>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:12px;font-size:13.5px;line-height:1.6;">
+        <div class="preview-card" style="margin-top:0;">
+          <div style="font-weight:700;margin-bottom:6px;">步驟 1：一鍵複製兩個檔案到試算表的「擴充功能 → Apps Script」</div>
+          <ol style="padding-left:18px;color:var(--text-muted);display:flex;flex-direction:column;gap:4px;">
+            <li>打開任意一個 Google Sheet（<b>全新空白試算表</b>或你自己的既有試算表皆可），點上方選單 <b>擴充功能 (Extensions) → Apps Script</b>。</li>
+            <li>點左側「檔案」旁的 <b>＋ → 指令碼</b>，命名為 <b><code>Dashboard</code></b>（若為全新空白專案也可直接貼在預設的 <code>程式碼.gs</code>），點擊下方按鈕複製貼上 <b>Code.gs</b>。</li>
+            <li>再點左側「檔案」旁的 <b>＋ → HTML</b>，命名為 <b><code>Index</code></b>（系統會自動變成 <code>Index.html</code>，注意 <code>I</code> 大寫），清空預設內容後點擊下方按鈕複製貼上 <b>Index.html</b>，按 <code>Cmd+S</code> 儲存。</li>
+            <li><b>若你是全新空白試算表</b>：回到試算表按 <code>F5</code> 重新整理後，點上方選單 <b>「📊 財務儀表板 → 🚀 一鍵初始化標準帳本結構」</b>，系統會自動建好所有工作表標題、範例列與 <code>SUMIFS / GOOGLEFINANCE</code> 公式（已含資料的分頁會自動略過，絕不覆蓋）！</li>
+          </ol>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px;">
+            <button type="button" class="btn btn-write" id="copyCodeGsBtn">📋 一鍵複製 Code.gs</button>
+            <button type="button" class="btn btn-write" id="copyIndexHtmlBtn">📋 一鍵複製 Index.html</button>
+          </div>
+        </div>
+
+        <div class="preview-card" style="margin-top:0;">
+          <div style="font-weight:700;margin-bottom:6px;">步驟 2：部署雲端網頁應用程式（同時支援電腦全螢幕 & iPhone 獨立 App API）</div>
+          <ol style="padding-left:18px;color:var(--text-muted);display:flex;flex-direction:column;gap:4px;">
+            <li>在 Apps Script 右上角點 <b>部署 (Deploy) → 新增部署作業 (New deployment)</b>（若先前已部署過，點「管理部署作業 → ✏️ 編輯 → 建立新版本」）。</li>
+            <li>左上角齒輪選取類型：<b>網頁應用程式 (Web app)</b>，執行身分選 <b>「我 (Me)」</b>。</li>
+            <li><b>存取權限選擇</b>：
+              <br/>• 若要配對 <b>📱 iPhone 主畫面全螢幕獨立 App</b>：請選 <b>「所有人 (Anyone)」</b>（<code>Code.gs</code> 已內建 <b>256-bit 私密配對金鑰驗證</b>，無配對碼者完全無法讀取或修改任何資料！）。
+              <br/>• 若只在電腦瀏覽器開網址、不裝獨立 App：可選「僅限我自己 (Only myself)」。</li>
+            <li>部署完成後回到 Google Sheet 重新整理，點上方選單 <b>「📊 財務儀表板 → 📱 取得 / 重設 iPhone App 專屬配對碼」</b> 即可一鍵複製配對碼！若需要每日自動淨值走勢圖，也可點選 <b>「⏰ 開啟 / 關閉每日淨值紀錄排程」</b>。</li>
+          </ol>
+        </div>
+
+        <div class="helper-box">
+          <div style="font-weight:700;color:var(--accent);">💡 給不同使用者的彈性啟動小撇步：</div>
+          <div style="color:var(--text-muted);">
+            • <b>沒有試算表、想從零開始</b>：開一份空白 Google Sheet → 貼上兩份檔案 → 點選 <b>「🚀 一鍵初始化標準帳本結構」</b>，30 秒完成開帳，並支援在既有欄位移位／新增自訂欄位後自動以標題列對應！<br/>
+            • <b>有多位使用者想各自記帳</b>：所有人都可共用同一個前端 App 網址，各自在自己的 Google Sheet 部署相同程式碼，貼上自己的 <code>WDB1:...</code> 配對碼即可獨立連線使用！
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;margin-top:16px;">
+        <button type="button" class="btn" id="doneGasModalBtn">關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- iOS Safari Add-to-Home-Screen Hint Banner -->
+  <div class="ios-install-banner" id="iosInstallBanner">
+    <div style="line-height:1.45;">
+      <b>📲 安裝成全螢幕無邊框 App：</b>點下方 Safari <b>「分享 ⬆️ → 加入主畫面」</b>，即可從桌面秒開且隱藏網址列！
+    </div>
+    <button type="button" class="btn btn-xs" id="closeIosBannerBtn" style="flex-shrink:0;">知道了</button>
+  </div>
+
+  <!-- Mobile Native-Feel Frosted 5-Slot Symmetrical Bottom Tab Bar (<= 768px) -->
+  <nav class="mobile-bottom-nav" id="mobileBottomNav" aria-label="手機底部主選單">
+    <button type="button" class="mob-nav-btn active" data-page="overview">
+      <span class="mob-ico">📊</span>
+      <span>總覽</span>
+    </button>
+    <button type="button" class="mob-nav-btn" data-page="trades">
+      <span class="mob-ico">🧾</span>
+      <span>交易</span>
+    </button>
+    <button type="button" class="mob-nav-btn mob-nav-add" id="mobNavAddBtn" aria-label="新增交易或更新資產">
+      <span class="mob-ico">＋</span>
+      <span>紀錄</span>
+    </button>
+    <button type="button" class="mob-nav-btn" data-page="rebalance">
+      <span class="mob-ico">⚖️</span>
+      <span>再平衡</span>
+    </button>
+    <button type="button" class="mob-nav-btn" data-page="xirr">
+      <span class="mob-ico">📈</span>
+      <span>績效</span>
+    </button>
+  </nav>
+
+  <!-- iPhone Fullscreen Standalone PWA Pairing & Setup Modal -->
+  <div class="modal-backdrop" id="pwaPairModal">
+    <div class="modal-panel" style="max-width:600px;">
+      <div class="modal-header">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-size:17px;font-weight:800;">📱 iPhone 全螢幕獨立 App 雲端配對</span>
+            <span class="badge badge-info" id="pwaConnStatusBadge">檢查連線中</span>
+          </div>
+          <div style="font-size:12.5px;color:var(--text-muted);margin-top:3px;">
+            透過 256-bit 私密配對金鑰直連你的 Google Sheet，享受 0.1 秒快取秒開、全螢幕無網址列與即時雙向記帳
+          </div>
+        </div>
+        <button class="modal-close" id="closePwaModalBtn" type="button">✕</button>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:12px;font-size:13px;line-height:1.6;">
+        <!-- Quick Mobile Controls (RSU toggle & Sheet shortcut hidden from compact mobile topbar) -->
+        <div class="preview-card" style="margin-top:0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;">
+          <label id="mobRsuWrap" style="display:inline-flex;align-items:center;gap:7px;cursor:pointer;font-weight:600;">
+            <input type="checkbox" id="mobRsuToggle" style="accent-color:var(--accent);width:16px;height:16px;" />
+            <span>納入未歸屬公司 RSU 股數模擬</span>
+          </label>
+          <a id="mobOpenSheetLink" href="#" target="_blank" rel="noopener" style="color:var(--accent);font-weight:700;text-decoration:none;">↗ 開啟原始 Google Sheet</a>
+        </div>
+
+        <!-- Step A: One-Tap Pairing -->
+        <div class="preview-card" style="margin-top:0;border-color:var(--accent);">
+          <div style="font-weight:800;font-size:14px;margin-bottom:6px;color:var(--accent);">🔑 貼上專屬配對碼（iPhone 主畫面 App 點此一鍵連線）</div>
+          <div style="color:var(--text-muted);font-size:12px;margin-bottom:8px;">
+            在電腦 Google Sheet 上方選單點 <b>「📊 財務儀表板 → 📱 取得 iPhone App 專屬配對碼」</b> 按複製後，iPhone 可直接用 Apple 通用剪貼簿一鍵貼上：
+          </div>
+          <button type="button" class="btn btn-write" id="pastePairCodeBtn" style="width:100%;justify-content:center;padding:10px 14px;font-size:14px;margin-bottom:8px;">
+            📋 從剪貼簿一鍵貼上配對碼並立即連線
+          </button>
+          <div style="display:flex;gap:8px;align-items:stretch;">
+            <textarea id="pwaPairCodeInput" rows="2" placeholder="或長按在此貼上 WDB1:... 開頭的專屬配對碼" style="flex:1;padding:8px 10px;border-radius:9px;border:1px solid var(--border-strong);background:var(--bg-elev);color:var(--text);font-family:monospace;font-size:12px;resize:none;"></textarea>
+            <button type="button" class="btn" id="applyPairCodeBtn" style="white-space:nowrap;">✓ 套用連線</button>
+          </div>
+          <div id="pwaPairErrorBox" style="display:none;margin-top:10px;padding:10px 12px;border-radius:10px;background:var(--neg-bg);border:1px solid var(--neg);color:var(--neg);font-size:12.5px;line-height:1.55;word-break:break-word;"></div>
+
+          <div id="exportCurrentPairWrap" style="display:none;margin-top:8px;">
+            <button type="button" class="btn" id="copyCurrentPairBtn" style="width:100%;justify-content:center;min-block-size:36px;">📋 複製目前有效配對碼（同步給手機／其他裝置）</button>
+            <div id="copyCurrentPairStatus" role="status" aria-live="polite" style="font-size:12px;color:var(--pos);margin-top:4px;opacity:0;transition:opacity 0.15s;min-height:16px;"></div>
+          </div>
+
+          <button type="button" class="btn" id="startDemoModeBtn" style="width:100%;justify-content:center;margin-top:8px;">🧪 還沒有試算表？先進入互動展示預覽模式 (Demo)</button>
+          <button type="button" class="btn" id="openGasFromPairCardBtn" style="width:100%;justify-content:center;margin-top:6px;">🚀 我要建一張全新的 Google Sheet（複製程式碼 & 30 秒初始化）</button>
+
+          <details style="margin-top:10px;">
+            <summary style="cursor:pointer;font-size:12px;color:var(--text-muted);user-select:none;">進階：手動檢視或輸入 Apps Script 網址與金鑰</summary>
+            <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;">
+              <div class="form-field">
+                <label>Apps Script Web App 網址 (/exec)</label>
+                <input type="url" id="pwaApiUrlInput" placeholder="https://script.google.com/macros/s/.../exec" />
+              </div>
+              <div class="form-field">
+                <label>256-bit 專屬存取金鑰 (PWA_API_TOKEN)</label>
+                <input type="password" id="pwaApiTokenInput" placeholder="64 碼加密金鑰" />
+              </div>
+              <button type="button" class="btn btn-xs" id="saveManualPwaBtn" style="align-self:flex-end;">儲存手動連線設定</button>
+            </div>
+          </details>
+        </div>
+
+        <!-- Step B: 3-Step Full Setup Guide -->
+        <div class="helper-box">
+          <div style="font-weight:800;color:var(--text);">🚀 3 分鐘把完整無邊框 App 裝進 iPhone 主畫面（支援空白試算表一鍵建表）：</div>
+          <ol style="padding-left:18px;color:var(--text-muted);display:flex;flex-direction:column;gap:5px;margin-top:2px;">
+            <li><b>建立或連線試算表雲端 API</b>：將 <code>Code.gs</code> 與 <code>Index.html</code> 貼入 Google Sheet 的 Apps Script（若為全新空白試算表，可先點選單 <b>「🚀 一鍵初始化標準帳本結構」</b>），點「部署 → 管理部署作業 → 新版本」，設為 <b>執行身分：我 (Me)</b>、<b>誰可以存取：所有人 (Anyone)</b>，再從試算表上方選單複製 <code>WDB1:...</code> 配對碼。</li>
+            <li><b>免費發布純前端 App 外殼（零個資上傳）</b>：在電腦終端機執行 <code>vercel --prod</code>（專案已內建 <code>.vercelignore</code> 嚴格排除本地資料），或將 <code>public/</code> 資料夾放到 GitHub Pages / Netlify，取得專屬 <code>https://...</code> 網址（多位使用者可共用同一個 App 網址，各自配對自己的試算表！）。</li>
+            <li><b>加入 iPhone 主畫面</b>：用 iPhone <b>Safari</b> 打開該網址 → 點底部 <b>「分享 ⬆️ → 加入主畫面」</b> → 從 iPhone 桌面點開專屬貓咪抱錢圖示 App → 按上方 <b>「📋 一鍵貼上配對碼」</b> 即完成永久綁定！</li>
+          </ol>
+          <div style="margin-top:8px;">
+            <button type="button" class="btn btn-xs" id="openGasFromPwaBtn">☁️ 查看／複製 Apps Script 程式碼（支援空白試算表一鍵初始化）</button>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:16px;flex-wrap:wrap;">
+        <button type="button" class="btn btn-xs" id="clearPwaConnBtn" style="color:var(--neg);">中斷配對並清除本機快取</button>
+        <button type="button" class="btn" id="donePwaModalBtn">完成</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script id="INITIAL_DATA_SCRIPT" type="application/json">null</script>
+
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>
